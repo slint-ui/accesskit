@@ -24,6 +24,13 @@
   * dependencies
     * accesskit bumped from 0.16.2 to 0.16.3
 
+## [0.36.0](https://github.com/AccessKit/accesskit/compare/accesskit_consumer-v0.35.0...accesskit_consumer-v0.36.0) (2026-03-17)
+
+
+### Features
+
+* Support tree views on Windows ([#698](https://github.com/AccessKit/accesskit/issues/698)) ([1d3b189](https://github.com/AccessKit/accesskit/commit/1d3b18912ea5f4b0abd37ddb0a771768155fbd7b))
+
 ## [0.35.0](https://github.com/AccessKit/accesskit/compare/accesskit_consumer-v0.34.0...accesskit_consumer-v0.35.0) (2026-03-04)
 
 
