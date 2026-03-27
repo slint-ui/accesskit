@@ -150,7 +150,7 @@ impl Adapter {
     /// consider using [`Adapter::with_direct_handlers`] or
     /// [`Adapter::with_mixed_handlers`] instead.
     pub fn with_event_loop_proxy(
-        window: &Window,
+        window: &Box<dyn Window>,
         proxy: EventLoopProxy,
         events: Arc<Mutex<Vec<Event>>>,
     ) -> Self {
@@ -192,7 +192,7 @@ impl Adapter {
     /// the first update. However, remember that each of these handlers may be
     /// called on any thread, depending on the underlying platform adapter.
     pub fn with_direct_handlers(
-        window: &Window,
+        window: &Box<dyn Window>,
         activation_handler: impl 'static + ActivationHandler + Send,
         action_handler: impl 'static + ActionHandler + Send,
         deactivation_handler: impl 'static + DeactivationHandler + Send,
@@ -219,7 +219,7 @@ impl Adapter {
     /// return the initial tree synchronously. Remember that the thread on which
     /// the activation handler is called is platform-dependent.
     pub fn with_mixed_handlers(
-        window: &Window,
+        window: &Box<dyn Window>,
         activation_handler: impl 'static + ActivationHandler + Send,
         proxy: EventLoopProxy,
         events: Arc<Mutex<Vec<Event>>>,
@@ -247,7 +247,7 @@ impl Adapter {
     ///
     /// This must be called whenever a new window event is received
     /// and before it is handled by the application.
-    pub fn process_event(&mut self, window: &Window, event: &WinitWindowEvent) {
+    pub fn process_event(&mut self, window: &Box<dyn Window>, event: &WinitWindowEvent) {
         self.inner.process_event(window, event);
     }
 

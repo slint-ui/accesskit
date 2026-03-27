@@ -144,13 +144,13 @@ impl ActivationHandler for TearoffActivationHandler {
 }
 
 struct WindowState {
-    window: Window,
+    window: Box<dyn Window>,
     adapter: Adapter,
     ui: Arc<Mutex<UiState>>,
 }
 
 impl WindowState {
-    fn new(window: Window, adapter: Adapter, ui: Arc<Mutex<UiState>>) -> Self {
+    fn new(window: Box<dyn Window>, adapter: Adapter, ui: Arc<Mutex<UiState>>) -> Self {
         Self {
             window,
             adapter,
