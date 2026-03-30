@@ -129,6 +129,363 @@
   * dependencies
     * accesskit_unix bumped from 0.11.0 to 0.11.1
 
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.16.2 to 0.16.3
+    * accesskit_windows bumped from 0.23.1 to 0.23.2
+    * accesskit_macos bumped from 0.17.2 to 0.17.3
+    * accesskit_unix bumped from 0.12.2 to 0.12.3
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit_macos bumped from 0.17.3 to 0.17.4
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.17.0 to 0.17.1
+    * accesskit_windows bumped from 0.24.0 to 0.24.1
+    * accesskit_macos bumped from 0.18.0 to 0.18.1
+    * accesskit_unix bumped from 0.13.0 to 0.13.1
+
+## [0.32.2](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.32.1...accesskit_winit-v0.32.2) (2026-03-04)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit_windows bumped from 0.32.0 to 0.32.1
+    * accesskit_macos bumped from 0.25.0 to 0.26.0
+    * accesskit_unix bumped from 0.20.0 to 0.21.0
+    * accesskit_android bumped from 0.7.1 to 0.7.2
+
+## [0.32.1](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.32.0...accesskit_winit-v0.32.1) (2026-02-25)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit_android bumped from 0.7.0 to 0.7.1
+
+## [0.32.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.31.1...accesskit_winit-v0.32.0) (2026-02-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* Update minimum supported Rust version to 1.85 ([#683](https://github.com/AccessKit/accesskit/issues/683))
+
+### Bug Fixes
+
+* Update minimum supported Rust version to 1.85 ([#683](https://github.com/AccessKit/accesskit/issues/683)) ([f8c22cb](https://github.com/AccessKit/accesskit/commit/f8c22cbb53ce6b1859adeff3c0b7154ad9e1f25e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.23.0 to 0.24.0
+    * accesskit_windows bumped from 0.31.1 to 0.32.0
+    * accesskit_macos bumped from 0.24.1 to 0.25.0
+    * accesskit_unix bumped from 0.19.1 to 0.20.0
+    * accesskit_android bumped from 0.6.1 to 0.7.0
+
+## [0.31.1](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.31.0...accesskit_winit-v0.31.1) (2026-01-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit_windows bumped from 0.31.0 to 0.31.1
+    * accesskit_macos bumped from 0.24.0 to 0.24.1
+    * accesskit_unix bumped from 0.19.0 to 0.19.1
+    * accesskit_android bumped from 0.6.0 to 0.6.1
+
+## [0.31.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.30.0...accesskit_winit-v0.31.0) (2026-01-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* Multiple tree support ([#655](https://github.com/AccessKit/accesskit/issues/655))
+
+### Features
+
+* Multiple tree support ([#655](https://github.com/AccessKit/accesskit/issues/655)) ([c16eb80](https://github.com/AccessKit/accesskit/commit/c16eb80c49d14f39e8a7defb1694bf22b8ceed6f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.22.0 to 0.23.0
+    * accesskit_windows bumped from 0.30.0 to 0.31.0
+    * accesskit_macos bumped from 0.23.0 to 0.24.0
+    * accesskit_unix bumped from 0.18.0 to 0.19.0
+    * accesskit_android bumped from 0.5.0 to 0.6.0
+
+## [0.30.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.29.2...accesskit_winit-v0.30.0) (2025-12-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* Drop deprecated roles ([#642](https://github.com/AccessKit/accesskit/issues/642))
+* Infrastructure for supporting text formatting changes ([#626](https://github.com/AccessKit/accesskit/issues/626))
+
+### Features
+
+* Add GridCell role ([#643](https://github.com/AccessKit/accesskit/issues/643)) ([1e5abca](https://github.com/AccessKit/accesskit/commit/1e5abca737d1ee942c0804fec2c06d3cb08faa94))
+* Implement BrailleLabel and BrailleRoleDescription roles ([#638](https://github.com/AccessKit/accesskit/issues/638)) ([0fdcebb](https://github.com/AccessKit/accesskit/commit/0fdcebb55e308e039ec99fbc31e94e8087a69f2d))
+
+
+### Bug Fixes
+
+* Redraw only when needed in the winit examples ([#646](https://github.com/AccessKit/accesskit/issues/646)) ([d7e15bd](https://github.com/AccessKit/accesskit/commit/d7e15bd98d1fecfaa5076f80ace31ccee862f5bc))
+
+
+### Code Refactoring
+
+* Drop deprecated roles ([#642](https://github.com/AccessKit/accesskit/issues/642)) ([4d46c27](https://github.com/AccessKit/accesskit/commit/4d46c2740631c5fe4f057707b949d12b26931d0b))
+* Infrastructure for supporting text formatting changes ([#626](https://github.com/AccessKit/accesskit/issues/626)) ([ea23ec4](https://github.com/AccessKit/accesskit/commit/ea23ec424c7dbb8841e03d71b6a15b74264850a9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.21.1 to 0.22.0
+    * accesskit_windows bumped from 0.29.2 to 0.30.0
+    * accesskit_macos bumped from 0.22.2 to 0.23.0
+    * accesskit_unix bumped from 0.17.2 to 0.18.0
+    * accesskit_android bumped from 0.4.2 to 0.5.0
+
+## [0.29.2](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.29.1...accesskit_winit-v0.29.2) (2025-10-20)
+
+
+### Bug Fixes
+
+* Fix winit examples window not showing up under Wayland ([#625](https://github.com/AccessKit/accesskit/issues/625)) ([87ce769](https://github.com/AccessKit/accesskit/commit/87ce769282b00684f2b2ab6a3410ed6edb894f22))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit_windows bumped from 0.29.1 to 0.29.2
+    * accesskit_macos bumped from 0.22.1 to 0.22.2
+    * accesskit_unix bumped from 0.17.1 to 0.17.2
+    * accesskit_android bumped from 0.4.1 to 0.4.2
+
+## [0.29.1](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.29.0...accesskit_winit-v0.29.1) (2025-10-02)
+
+
+### Bug Fixes
+
+* Impl `Clone` and `PartialEq` on `WindowEvent` ([#618](https://github.com/AccessKit/accesskit/issues/618)) ([3a4771b](https://github.com/AccessKit/accesskit/commit/3a4771b87455cc005c18152935535818a3f9f825))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.21.0 to 0.21.1
+    * accesskit_windows bumped from 0.29.0 to 0.29.1
+    * accesskit_macos bumped from 0.22.0 to 0.22.1
+    * accesskit_unix bumped from 0.17.0 to 0.17.1
+    * accesskit_android bumped from 0.4.0 to 0.4.1
+
+## [0.29.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.28.0...accesskit_winit-v0.29.0) (2025-07-16)
+
+
+### Features
+
+* Let parents declare actions supported on their children ([#593](https://github.com/AccessKit/accesskit/issues/593)) ([70b534b](https://github.com/AccessKit/accesskit/commit/70b534bed168a84b84cc35199588aa8ab784fb43))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.20.0 to 0.21.0
+    * accesskit_windows bumped from 0.28.0 to 0.29.0
+    * accesskit_macos bumped from 0.21.0 to 0.22.0
+    * accesskit_unix bumped from 0.16.0 to 0.17.0
+    * accesskit_android bumped from 0.3.0 to 0.4.0
+
+## [0.28.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.27.0...accesskit_winit-v0.28.0) (2025-06-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* Force a semver-breaking release ([#589](https://github.com/AccessKit/accesskit/issues/589))
+
+### Bug Fixes
+
+* Force a semver-breaking release ([#589](https://github.com/AccessKit/accesskit/issues/589)) ([2887cdd](https://github.com/AccessKit/accesskit/commit/2887cddde817ba3851688068d8d10de5cef7c624))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.19.0 to 0.20.0
+    * accesskit_windows bumped from 0.27.0 to 0.28.0
+    * accesskit_macos bumped from 0.20.0 to 0.21.0
+    * accesskit_unix bumped from 0.15.0 to 0.16.0
+    * accesskit_android bumped from 0.2.0 to 0.3.0
+
+## [0.27.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.26.0...accesskit_winit-v0.27.0) (2025-05-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* Simplify the core Android adapter API ([#558](https://github.com/AccessKit/accesskit/issues/558))
+* Drop redundant `HasPopup::True` ([#550](https://github.com/AccessKit/accesskit/issues/550))
+
+### Code Refactoring
+
+* Drop redundant `HasPopup::True` ([#550](https://github.com/AccessKit/accesskit/issues/550)) ([56abf17](https://github.com/AccessKit/accesskit/commit/56abf17356e4c7f13f64aaeaca6a63c8f7ede553))
+* Simplify the core Android adapter API ([#558](https://github.com/AccessKit/accesskit/issues/558)) ([7ac5911](https://github.com/AccessKit/accesskit/commit/7ac5911b11f3d6b8b777b91e6476e7073f6b0e4a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.18.0 to 0.19.0
+    * accesskit_windows bumped from 0.26.0 to 0.27.0
+    * accesskit_macos bumped from 0.19.0 to 0.20.0
+    * accesskit_unix bumped from 0.14.0 to 0.15.0
+    * accesskit_android bumped from 0.1.1 to 0.2.0
+
+## [0.26.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.25.0...accesskit_winit-v0.26.0) (2025-03-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* Panic if the window is visible when the adapter is created, for adapters where this is a problem ([#529](https://github.com/AccessKit/accesskit/issues/529))
+
+### Bug Fixes
+
+* Panic if the window is visible when the adapter is created, for adapters where this is a problem ([#529](https://github.com/AccessKit/accesskit/issues/529)) ([c43c37b](https://github.com/AccessKit/accesskit/commit/c43c37ba2502656fcae4fd726b9b7db0bb520f31))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit_windows bumped from 0.25.0 to 0.26.0
+    * accesskit_android bumped from 0.1.0 to 0.1.1
+
+## [0.25.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.24.0...accesskit_winit-v0.25.0) (2025-03-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* Make accesskit_android an optional dependency of accesskit_winit ([#524](https://github.com/AccessKit/accesskit/issues/524))
+
+### Bug Fixes
+
+* Make accesskit_android an optional dependency of accesskit_winit ([#524](https://github.com/AccessKit/accesskit/issues/524)) ([bb17d44](https://github.com/AccessKit/accesskit/commit/bb17d449b601eaffad1c7201ec5bf8de241bb8f8))
+
+## [0.24.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.23.1...accesskit_winit-v0.24.0) (2025-03-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* Add event loop parameter to winit adapter constructors ([#517](https://github.com/AccessKit/accesskit/issues/517))
+* Drop `Tree::app_name` ([#492](https://github.com/AccessKit/accesskit/issues/492))
+
+### Features
+
+* Android adapter ([#500](https://github.com/AccessKit/accesskit/issues/500)) ([7e65ac7](https://github.com/AccessKit/accesskit/commit/7e65ac77d7e108ac5b9f3722f488a2fdf2e3b3e0))
+
+
+### Bug Fixes
+
+* Update winit to 0.30.9 ([#511](https://github.com/AccessKit/accesskit/issues/511)) ([0be21e6](https://github.com/AccessKit/accesskit/commit/0be21e6a2979af483b573b1c9b07c677286b871d))
+
+
+### Code Refactoring
+
+* Add event loop parameter to winit adapter constructors ([#517](https://github.com/AccessKit/accesskit/issues/517)) ([0d15f24](https://github.com/AccessKit/accesskit/commit/0d15f246a301a68af4424f7602c2f3be25da9327))
+* Drop `Tree::app_name` ([#492](https://github.com/AccessKit/accesskit/issues/492)) ([089794c](https://github.com/AccessKit/accesskit/commit/089794c8f74957e91a19ae3df508e2a892f39ebc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.17.1 to 0.18.0
+    * accesskit_windows bumped from 0.24.1 to 0.25.0
+    * accesskit_macos bumped from 0.18.1 to 0.19.0
+    * accesskit_unix bumped from 0.13.1 to 0.14.0
+
+## [0.23.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.22.4...accesskit_winit-v0.23.0) (2024-10-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* Rename `name` to `label` and use `value` for label content ([#475](https://github.com/AccessKit/accesskit/issues/475))
+* Rename `NodeBuilder` to `Node` and the old `Node` to `FrozenNode` ([#476](https://github.com/AccessKit/accesskit/issues/476))
+* Drop `DefaultActionVerb` ([#472](https://github.com/AccessKit/accesskit/issues/472))
+* Make the core crate no-std ([#468](https://github.com/AccessKit/accesskit/issues/468))
+
+### Features
+
+* Make the core crate no-std ([#468](https://github.com/AccessKit/accesskit/issues/468)) ([2fa0d3f](https://github.com/AccessKit/accesskit/commit/2fa0d3f5b2b7ac11ef1751c133706f29e548bd6d))
+
+
+### Code Refactoring
+
+* Drop `DefaultActionVerb` ([#472](https://github.com/AccessKit/accesskit/issues/472)) ([ef3b003](https://github.com/AccessKit/accesskit/commit/ef3b0038224459094f650368412650bc3b69526b))
+* Rename `name` to `label` and use `value` for label content ([#475](https://github.com/AccessKit/accesskit/issues/475)) ([e0053a5](https://github.com/AccessKit/accesskit/commit/e0053a5399929e8e0d4f07aa18de604ed8766ace))
+* Rename `NodeBuilder` to `Node` and the old `Node` to `FrozenNode` ([#476](https://github.com/AccessKit/accesskit/issues/476)) ([7d8910e](https://github.com/AccessKit/accesskit/commit/7d8910e35f7bc0543724cc124941a3bd0304bcc0))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.16.3 to 0.17.0
+    * accesskit_windows bumped from 0.23.2 to 0.24.0
+    * accesskit_macos bumped from 0.17.4 to 0.18.0
+    * accesskit_unix bumped from 0.12.3 to 0.13.0
+
+## [0.22.2](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.22.1...accesskit_winit-v0.22.2) (2024-10-07)
+
+
+### Bug Fixes
+
+* Update minimum supported Rust version to 1.75 ([#457](https://github.com/AccessKit/accesskit/issues/457)) ([fc622fe](https://github.com/AccessKit/accesskit/commit/fc622fe7657c80a4eedad6f6cded11d2538b54d5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.16.1 to 0.16.2
+    * accesskit_windows bumped from 0.23.0 to 0.23.1
+    * accesskit_macos bumped from 0.17.1 to 0.17.2
+    * accesskit_unix bumped from 0.12.1 to 0.12.2
+
+## [0.22.1](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.22.0...accesskit_winit-v0.22.1) (2024-09-24)
+
+
+### Bug Fixes
+
+* Use the new HWND type on accesskit_winit ([#453](https://github.com/AccessKit/accesskit/issues/453)) ([68a2462](https://github.com/AccessKit/accesskit/commit/68a24629381f0b18f6ed1ee008fe72ce9330092e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.16.0 to 0.16.1
+    * accesskit_windows bumped from 0.22.0 to 0.23.0
+    * accesskit_macos bumped from 0.17.0 to 0.17.1
+    * accesskit_unix bumped from 0.12.0 to 0.12.1
+
 ## [0.22.0](https://github.com/AccessKit/accesskit/compare/accesskit_winit-v0.21.1...accesskit_winit-v0.22.0) (2024-06-29)
 
 

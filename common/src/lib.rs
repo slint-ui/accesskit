@@ -8,22 +8,28 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE.chromium file.
 
+#![cfg_attr(not(any(feature = "pyo3", feature = "schemars")), no_std)]
+
+extern crate alloc;
+
+#[cfg(feature = "schemars")]
+use alloc::borrow::Cow;
+use alloc::{boxed::Box, string::String, vec::Vec};
+use core::fmt;
 #[cfg(feature = "pyo3")]
 use pyo3::pyclass;
 #[cfg(feature = "schemars")]
-use schemars::{
-    gen::SchemaGenerator,
-    schema::{InstanceType, ObjectValidation, Schema, SchemaObject},
-    JsonSchema, Map as SchemaMap,
-};
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 #[cfg(feature = "serde")]
 use serde::{
     de::{Deserializer, IgnoredAny, MapAccess, Visitor},
     ser::{SerializeMap, Serializer},
     Deserialize, Serialize,
 };
-#[cfg(feature = "serde")]
-use std::fmt;
+#[cfg(feature = "schemars")]
+use serde_json::{Map as SchemaMap, Value as SchemaValue};
+
+pub use uuid::Uuid;
 
 mod geometry;
 pub use geometry::{Affine, Point, Rect, Size, Vec2};
@@ -45,13 +51,13 @@ pub use geometry::{Affine, Point, Rect, Size, Vec2};
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum Role {
     #[default]
     Unknown,
-    InlineTextBox,
+    TextRun,
     Cell,
     Label,
     Image,
@@ -125,11 +131,8 @@ pub enum Role {
     ContentInfo,
     Definition,
     DescriptionList,
-    DescriptionListDetail,
-    DescriptionListTerm,
     Details,
     Dialog,
-    Directory,
     DisclosureTriangle,
     Document,
     EmbeddedObject,
@@ -138,12 +141,11 @@ pub enum Role {
     FigureCaption,
     Figure,
     Footer,
-    FooterAsNonLandmark,
     Form,
     Grid,
+    GridCell,
     Group,
     Header,
-    HeaderAsNonLandmark,
     Heading,
     Iframe,
     IframePresentational,
@@ -165,8 +167,6 @@ pub enum Role {
     Navigation,
     Note,
     PluginObject,
-    Portal,
-    Pre,
     ProgressIndicator,
     RadioGroup,
     Region,
@@ -177,6 +177,8 @@ pub enum Role {
     ScrollView,
     Search,
     Section,
+    SectionFooter,
+    SectionHeader,
     Slider,
     SpinButton,
     Splitter,
@@ -264,9 +266,6 @@ pub enum Role {
 }
 
 /// An action to be taken on an accessibility node.
-///
-/// In contrast to [`DefaultActionVerb`], these describe what happens to the
-/// object, e.g. "focus".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "enumn", derive(enumn::N))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -274,12 +273,12 @@ pub enum Role {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum Action {
-    /// Do the default action for an object, typically this means "click".
-    Default,
+    /// Do the equivalent of a single click or tap.
+    Click,
 
     Focus,
     Blur,
@@ -303,19 +302,17 @@ pub enum Action {
     /// Requires [`ActionRequest::data`] to be set to [`ActionData::Value`].
     ReplaceSelectedText,
 
-    // Scrolls by approximately one screen in a specific direction.
-    // TBD: Do we need a doc comment on each of the values below?
-    // Or does this awkwardness suggest a refactor?
-    ScrollBackward,
+    /// Scroll down by the specified unit.
     ScrollDown,
-    ScrollForward,
+    /// Scroll left by the specified unit.
     ScrollLeft,
+    /// Scroll right by the specified unit.
     ScrollRight,
+    /// Scroll up by the specified unit.
     ScrollUp,
 
-    /// Scroll any scrollable containers to make the target object visible
-    /// on the screen.  Optionally set [`ActionRequest::data`] to
-    /// [`ActionData::ScrollTargetRect`].
+    /// Scroll any scrollable containers to make the target node visible.
+    /// Optionally set [`ActionRequest::data`] to [`ActionData::ScrollHint`].
     ScrollIntoView,
 
     /// Scroll the given object to a specified point in the tree's container
@@ -346,6 +343,50 @@ impl Action {
     fn mask(self) -> u32 {
         1 << (self as u8)
     }
+
+    #[cfg(not(feature = "enumn"))]
+    fn n(value: u8) -> Option<Self> {
+        // Manually implement something similar to the enumn crate. We don't
+        // want to bring this crate by default though and we can't use a
+        // macro as it would break C bindings header file generation.
+        match value {
+            0 => Some(Action::Click),
+            1 => Some(Action::Focus),
+            2 => Some(Action::Blur),
+            3 => Some(Action::Collapse),
+            4 => Some(Action::Expand),
+            5 => Some(Action::CustomAction),
+            6 => Some(Action::Decrement),
+            7 => Some(Action::Increment),
+            8 => Some(Action::HideTooltip),
+            9 => Some(Action::ShowTooltip),
+            10 => Some(Action::ReplaceSelectedText),
+            11 => Some(Action::ScrollDown),
+            12 => Some(Action::ScrollLeft),
+            13 => Some(Action::ScrollRight),
+            14 => Some(Action::ScrollUp),
+            15 => Some(Action::ScrollIntoView),
+            16 => Some(Action::ScrollToPoint),
+            17 => Some(Action::SetScrollOffset),
+            18 => Some(Action::SetTextSelection),
+            19 => Some(Action::SetSequentialFocusNavigationStartingPoint),
+            20 => Some(Action::SetValue),
+            21 => Some(Action::ShowContextMenu),
+            _ => None,
+        }
+    }
+}
+
+fn action_mask_to_action_vec(mask: u32) -> Vec<Action> {
+    let mut actions = Vec::new();
+    let mut i = 0;
+    while let Some(variant) = Action::n(i) {
+        if mask & variant.mask() != 0 {
+            actions.push(variant);
+        }
+        i += 1;
+    }
+    actions
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -355,7 +396,7 @@ impl Action {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum Orientation {
@@ -372,7 +413,7 @@ pub enum Orientation {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum TextDirection {
@@ -393,7 +434,7 @@ pub enum TextDirection {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum Invalid {
@@ -409,7 +450,7 @@ pub enum Invalid {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum Toggled {
@@ -418,37 +459,14 @@ pub enum Toggled {
     Mixed,
 }
 
-/// Describes the action that will be performed on a given node when
-/// executing the default action, which is a click.
-///
-/// In contrast to [`Action`], these describe what the user can do on the
-/// object, e.g. "press", not what happens to the object as a result.
-/// Only one verb can be used at a time to describe the default action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "enumn", derive(enumn::N))]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "schemars", derive(JsonSchema))]
-#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
-#[cfg_attr(
-    feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
-)]
-#[repr(u8)]
-pub enum DefaultActionVerb {
-    Click,
-    Focus,
-    Check,
-    Uncheck,
-    /// A click will be performed on one of the node's ancestors.
-    /// This happens when the node itself is not clickable, but one of its
-    /// ancestors has click handlers attached which are able to capture the click
-    /// as it bubbles up.
-    ClickAncestor,
-    Jump,
-    Open,
-    Press,
-    Select,
-    Unselect,
+impl From<bool> for Toggled {
+    #[inline]
+    fn from(b: bool) -> Self {
+        match b {
+            false => Self::False,
+            true => Self::True,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -458,7 +476,7 @@ pub enum DefaultActionVerb {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum SortDirection {
@@ -474,7 +492,7 @@ pub enum SortDirection {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum AriaCurrent {
@@ -494,7 +512,7 @@ pub enum AriaCurrent {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum AutoComplete {
@@ -510,7 +528,7 @@ pub enum AutoComplete {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum Live {
@@ -526,11 +544,10 @@ pub enum Live {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum HasPopup {
-    True,
     Menu,
     Listbox,
     Tree,
@@ -545,7 +562,7 @@ pub enum HasPopup {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum ListStyle {
@@ -565,7 +582,7 @@ pub enum ListStyle {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum TextAlign {
@@ -582,7 +599,7 @@ pub enum TextAlign {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
 pub enum VerticalOffset {
@@ -597,10 +614,10 @@ pub enum VerticalOffset {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(
     feature = "pyo3",
-    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE")
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
 )]
 #[repr(u8)]
-pub enum TextDecoration {
+pub enum TextDecorationStyle {
     Solid,
     Dotted,
     Dashed,
@@ -611,7 +628,12 @@ pub enum TextDecoration {
 pub type NodeIdContent = u64;
 
 /// The stable identity of a [`Node`], unique within the node's tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Each tree (root or subtree) has its own independent ID space. The same
+/// `NodeId` value can exist in different trees without conflict. When working
+/// with multiple trees, the combination of `NodeId` and [`TreeId`] uniquely
+/// identifies a node.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "schemars", derive(JsonSchema))]
 #[repr(transparent)]
@@ -629,6 +651,27 @@ impl From<NodeId> for NodeIdContent {
     fn from(outer: NodeId) -> Self {
         outer.0
     }
+}
+
+impl fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+/// The stable identity of a [`Tree`].
+///
+/// Use [`TreeId::ROOT`] for the main/root tree. For subtrees, use a random
+/// UUID (version 4) to avoid collisions between independently created trees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schemars", derive(JsonSchema))]
+#[repr(transparent)]
+pub struct TreeId(pub Uuid);
+
+impl TreeId {
+    /// A reserved tree ID for the root tree. This uses a nil UUID.
+    pub const ROOT: Self = Self(Uuid::nil());
 }
 
 /// Defines a custom action for a UI element.
@@ -651,7 +694,7 @@ pub struct CustomAction {
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct TextPosition {
-    /// The node's role must be [`Role::InlineTextBox`].
+    /// The node's role must be [`Role::TextRun`].
     pub node: NodeId,
     /// The index of an item in [`Node::character_lengths`], or the length
     /// of that slice if the position is at the end of the line.
@@ -681,9 +724,7 @@ pub struct TextSelection {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[repr(u8)]
 enum Flag {
-    Hovered,
     Hidden,
-    Linked,
     Multiselectable,
     Required,
     Visited,
@@ -693,7 +734,6 @@ enum Flag {
     TouchTransparent,
     ReadOnly,
     Disabled,
-    Bold,
     Italic,
     ClipsChildren,
     IsLineBreakingObject,
@@ -710,6 +750,30 @@ impl Flag {
     }
 }
 
+/// A color represented in 8-bit sRGB plus alpha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schemars", derive(JsonSchema))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+#[repr(C)]
+pub struct Color {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub alpha: u8,
+}
+
+/// The style and color for a type of text decoration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schemars", derive(JsonSchema))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+#[repr(C)]
+pub struct TextDecoration {
+    pub style: TextDecorationStyle,
+    pub color: Color,
+}
+
 // The following is based on the technique described here:
 // https://viruta.org/reducing-memory-consumption-in-librsvg-2.html
 
@@ -720,8 +784,9 @@ enum PropertyValue {
     NodeId(NodeId),
     String(Box<str>),
     F64(f64),
+    F32(f32),
     Usize(usize),
-    Color(u32),
+    Color(Color),
     TextDecoration(TextDecoration),
     LengthSlice(Box<[u8]>),
     CoordSlice(Box<[f32]>),
@@ -729,7 +794,6 @@ enum PropertyValue {
     Invalid(Invalid),
     Toggled(Toggled),
     Live(Live),
-    DefaultActionVerb(DefaultActionVerb),
     TextDirection(TextDirection),
     Orientation(Orientation),
     SortDirection(SortDirection),
@@ -743,6 +807,7 @@ enum PropertyValue {
     Rect(Rect),
     TextSelection(Box<TextSelection>),
     CustomActionVec(Vec<CustomAction>),
+    TreeId(TreeId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -771,7 +836,7 @@ enum PropertyId {
     PopupFor,
 
     // String
-    Name,
+    Label,
     Description,
     Value,
     AccessKey,
@@ -789,6 +854,8 @@ enum PropertyId {
     Url,
     RowIndexText,
     ColumnIndexText,
+    BrailleLabel,
+    BrailleRoleDescription,
 
     // f64
     ScrollX,
@@ -802,6 +869,8 @@ enum PropertyId {
     MaxNumericValue,
     NumericValueStep,
     NumericValueJump,
+
+    // f32
     FontSize,
     FontWeight,
 
@@ -828,7 +897,7 @@ enum PropertyId {
 
     // LengthSlice
     CharacterLengths,
-    WordLengths,
+    WordStarts,
 
     // CoordSlice
     CharacterPositions,
@@ -842,7 +911,6 @@ enum PropertyId {
     Invalid,
     Toggled,
     Live,
-    DefaultActionVerb,
     TextDirection,
     Orientation,
     SortDirection,
@@ -858,6 +926,7 @@ enum PropertyId {
     Bounds,
     TextSelection,
     CustomActions,
+    TreeId,
 
     // This MUST be last.
     Unset,
@@ -873,10 +942,10 @@ impl Default for PropertyIndices {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Properties {
     indices: PropertyIndices,
-    values: Box<[PropertyValue]>,
+    values: Vec<PropertyValue>,
 }
 
 /// A single accessible object. A complete UI is represented as a tree of these.
@@ -885,7 +954,7 @@ struct Properties {
 /// to other languages, documentation of getter methods is written as if
 /// documenting fields in a struct, and such methods are referred to
 /// as properties.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "schemars", derive(JsonSchema))]
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
@@ -893,23 +962,9 @@ struct Properties {
 pub struct Node {
     role: Role,
     actions: u32,
+    child_actions: u32,
     flags: u32,
     properties: Properties,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-struct PropertiesBuilder {
-    indices: PropertyIndices,
-    values: Vec<PropertyValue>,
-}
-
-/// Builds a [`Node`].
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct NodeBuilder {
-    role: Role,
-    actions: u32,
-    flags: u32,
-    properties: PropertiesBuilder,
 }
 
 impl PropertyIndices {
@@ -923,11 +978,7 @@ impl PropertyIndices {
     }
 }
 
-fn unexpected_property_type() -> ! {
-    panic!();
-}
-
-impl PropertiesBuilder {
+impl Properties {
     fn get_mut(&mut self, id: PropertyId, default: PropertyValue) -> &mut PropertyValue {
         let index = self.indices.0[id as usize] as usize;
         if index == PropertyId::Unset as usize {
@@ -936,9 +987,6 @@ impl PropertiesBuilder {
             self.indices.0[id as usize] = index as u8;
             &mut self.values[index]
         } else {
-            if matches!(self.values[index], PropertyValue::None) {
-                self.values[index] = default;
-            }
             &mut self.values[index]
         }
     }
@@ -959,25 +1007,11 @@ impl PropertiesBuilder {
             self.values[index as usize] = PropertyValue::None;
         }
     }
-
-    fn build(self) -> Properties {
-        Properties {
-            indices: self.indices,
-            values: self.values.into_boxed_slice(),
-        }
-    }
 }
 
 macro_rules! flag_methods {
     ($($(#[$doc:meta])* ($id:ident, $getter:ident, $setter:ident, $clearer:ident)),+) => {
         impl Node {
-            $($(#[$doc])*
-            #[inline]
-            pub fn $getter(&self) -> bool {
-                (self.flags & (Flag::$id).mask()) != 0
-            })*
-        }
-        impl NodeBuilder {
             $($(#[$doc])*
             #[inline]
             pub fn $getter(&self) -> bool {
@@ -991,7 +1025,39 @@ macro_rules! flag_methods {
             pub fn $clearer(&mut self) {
                 self.flags &= !((Flag::$id).mask());
             })*
+            fn debug_flag_properties(&self, fmt: &mut fmt::DebugStruct) {
+                $(
+                    if self.$getter() {
+                        fmt.field(stringify!($getter), &true);
+                    }
+                )*
+            }
         }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(!node.$getter());
+            }
+
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter();
+                assert!(node.$getter());
+            }
+
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter();
+                node.$clearer();
+                assert!(!node.$getter());
+            }
+        })*
     }
 }
 
@@ -1000,9 +1066,8 @@ macro_rules! option_ref_type_getters {
         impl PropertyIndices {
             $(fn $method<'a>(&self, values: &'a [PropertyValue], id: PropertyId) -> Option<&'a $type> {
                 match self.get(values, id) {
-                    PropertyValue::None => None,
                     PropertyValue::$variant(value) => Some(value),
-                    _ => unexpected_property_type(),
+                    _ => None,
                 }
             })*
         }
@@ -1014,9 +1079,8 @@ macro_rules! slice_type_getters {
         impl PropertyIndices {
             $(fn $method<'a>(&self, values: &'a [PropertyValue], id: PropertyId) -> &'a [$type] {
                 match self.get(values, id) {
-                    PropertyValue::None => &[],
                     PropertyValue::$variant(value) => value,
-                    _ => unexpected_property_type(),
+                    _ => &[],
                 }
             })*
         }
@@ -1028,9 +1092,8 @@ macro_rules! copy_type_getters {
         impl PropertyIndices {
             $(fn $method(&self, values: &[PropertyValue], id: PropertyId) -> Option<$type> {
                 match self.get(values, id) {
-                    PropertyValue::None => None,
                     PropertyValue::$variant(value) => Some(*value),
-                    _ => unexpected_property_type(),
+                    _ => None,
                 }
             })*
         }
@@ -1039,7 +1102,7 @@ macro_rules! copy_type_getters {
 
 macro_rules! box_type_setters {
     ($(($method:ident, $type:ty, $variant:ident)),+) => {
-        impl NodeBuilder {
+        impl Node {
             $(fn $method(&mut self, id: PropertyId, value: impl Into<Box<$type>>) {
                 self.properties.set(id, PropertyValue::$variant(value.into()));
             })*
@@ -1049,7 +1112,7 @@ macro_rules! box_type_setters {
 
 macro_rules! copy_type_setters {
     ($(($method:ident, $type:ty, $variant:ident)),+) => {
-        impl NodeBuilder {
+        impl Node {
             $(fn $method(&mut self, id: PropertyId, value: $type) {
                 self.properties.set(id, PropertyValue::$variant(value));
             })*
@@ -1062,16 +1125,13 @@ macro_rules! vec_type_methods {
         $(slice_type_getters! {
             ($getter, $type, $variant)
         })*
-        impl NodeBuilder {
+        impl Node {
             $(fn $setter(&mut self, id: PropertyId, value: impl Into<Vec<$type>>) {
                 self.properties.set(id, PropertyValue::$variant(value.into()));
             }
             fn $pusher(&mut self, id: PropertyId, item: $type) {
-                match self.properties.get_mut(id, PropertyValue::$variant(Vec::new())) {
-                    PropertyValue::$variant(v) => {
-                        v.push(item);
-                    }
-                    _ => unexpected_property_type(),
+                if let PropertyValue::$variant(v) = self.properties.get_mut(id, PropertyValue::$variant(Vec::new())) {
+                    v.push(item);
                 }
             })*
         }
@@ -1081,13 +1141,6 @@ macro_rules! vec_type_methods {
 macro_rules! property_methods {
     ($($(#[$doc:meta])* ($id:ident, $getter:ident, $type_getter:ident, $getter_result:ty, $setter:ident, $type_setter:ident, $setter_param:ty, $clearer:ident)),+) => {
         impl Node {
-            $($(#[$doc])*
-            #[inline]
-            pub fn $getter(&self) -> $getter_result {
-                self.properties.indices.$type_getter(&self.properties.values, PropertyId::$id)
-            })*
-        }
-        impl NodeBuilder {
             $($(#[$doc])*
             #[inline]
             pub fn $getter(&self) -> $getter_result {
@@ -1111,12 +1164,25 @@ macro_rules! vec_property_methods {
             $(#[$doc])*
             ($id, $getter, $type_getter, &[$item_type], $setter, $type_setter, impl Into<Vec<$item_type>>, $clearer)
         }
-        impl NodeBuilder {
+        impl Node {
             #[inline]
             pub fn $pusher(&mut self, item: $item_type) {
                 self.$type_pusher(PropertyId::$id, item);
             }
         })*
+    }
+}
+
+macro_rules! slice_properties_debug_method {
+    ($name:ident, [$($getter:ident,)*]) => {
+        fn $name(&self, fmt: &mut fmt::DebugStruct) {
+            $(
+                let value = self.$getter();
+                if !value.is_empty() {
+                    fmt.field(stringify!($getter), &value);
+                }
+            )*
+        }
     }
 }
 
@@ -1126,6 +1192,54 @@ macro_rules! node_id_vec_property_methods {
             $(#[$doc])*
             ($id, NodeId, $getter, get_node_id_vec, $setter, set_node_id_vec, $pusher, push_to_node_id_vec, $clearer)
         })*
+        impl Node {
+            slice_properties_debug_method! { debug_node_id_vec_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, NodeId, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_empty());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter([]);
+                assert!(node.$getter().is_empty());
+                node.$setter([NodeId(0), NodeId(1)]);
+                assert_eq!(node.$getter(), &[NodeId(0), NodeId(1)]);
+            }
+            #[test]
+            fn pusher_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$pusher(NodeId(0));
+                assert_eq!(node.$getter(), &[NodeId(0)]);
+                node.$pusher(NodeId(1));
+                assert_eq!(node.$getter(), &[NodeId(0), NodeId(1)]);
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter([NodeId(0)]);
+                node.$clearer();
+                assert!(node.$getter().is_empty());
+            }
+        })*
+    }
+}
+
+macro_rules! option_properties_debug_method {
+    ($name:ident, [$($getter:ident,)*]) => {
+        fn $name(&self, fmt: &mut fmt::DebugStruct) {
+            $(
+                if let Some(value) = self.$getter() {
+                    fmt.field(stringify!($getter), &value);
+                }
+            )*
+        }
     }
 }
 
@@ -1134,6 +1248,32 @@ macro_rules! node_id_property_methods {
         $(property_methods! {
             $(#[$doc])*
             ($id, $getter, get_node_id_property, Option<NodeId>, $setter, set_node_id_property, NodeId, $clearer)
+        })*
+        impl Node {
+            option_properties_debug_method! { debug_node_id_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, NodeId, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(NodeId(1));
+                assert_eq!(node.$getter(), Some(NodeId(1)));
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(NodeId(1));
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
         })*
     }
 }
@@ -1144,6 +1284,32 @@ macro_rules! string_property_methods {
             $(#[$doc])*
             ($id, $getter, get_string_property, Option<&str>, $setter, set_string_property, impl Into<Box<str>>, $clearer)
         })*
+        impl Node {
+            option_properties_debug_method! { debug_string_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter("test");
+                assert_eq!(node.$getter(), Some("test"));
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter("test");
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
+        })*
     }
 }
 
@@ -1152,6 +1318,67 @@ macro_rules! f64_property_methods {
         $(property_methods! {
             $(#[$doc])*
             ($id, $getter, get_f64_property, Option<f64>, $setter, set_f64_property, f64, $clearer)
+        })*
+        impl Node {
+            option_properties_debug_method! { debug_f64_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(1.0);
+                assert_eq!(node.$getter(), Some(1.0));
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(1.0);
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
+        })*
+    }
+}
+
+macro_rules! f32_property_methods {
+    ($($(#[$doc:meta])* ($id:ident, $getter:ident, $setter:ident, $clearer:ident)),+) => {
+        $(property_methods! {
+            $(#[$doc])*
+            ($id, $getter, get_f32_property, Option<f32>, $setter, set_f32_property, f32, $clearer)
+        })*
+        impl Node {
+            option_properties_debug_method! { debug_f32_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(1.0);
+                assert_eq!(node.$getter(), Some(1.0));
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(1.0);
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
         })*
     }
 }
@@ -1162,6 +1389,32 @@ macro_rules! usize_property_methods {
             $(#[$doc])*
             ($id, $getter, get_usize_property, Option<usize>, $setter, set_usize_property, usize, $clearer)
         })*
+        impl Node {
+            option_properties_debug_method! { debug_usize_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(1);
+                assert_eq!(node.$getter(), Some(1));
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(1);
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
+        })*
     }
 }
 
@@ -1169,7 +1422,33 @@ macro_rules! color_property_methods {
     ($($(#[$doc:meta])* ($id:ident, $getter:ident, $setter:ident, $clearer:ident)),+) => {
         $(property_methods! {
             $(#[$doc])*
-            ($id, $getter, get_color_property, Option<u32>, $setter, set_color_property, u32, $clearer)
+            ($id, $getter, get_color_property, Option<Color>, $setter, set_color_property, Color, $clearer)
+        })*
+        impl Node {
+            option_properties_debug_method! { debug_color_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Color, Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(Color { red: 255, green: 255, blue: 255, alpha: 255 });
+                assert_eq!(node.$getter(), Some(Color { red: 255, green: 255, blue: 255, alpha: 255 }));
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(Color { red: 255, green: 255, blue: 255, alpha: 255 });
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
         })*
     }
 }
@@ -1180,6 +1459,42 @@ macro_rules! text_decoration_property_methods {
             $(#[$doc])*
             ($id, $getter, get_text_decoration_property, Option<TextDecoration>, $setter, set_text_decoration_property, TextDecoration, $clearer)
         })*
+        impl Node {
+            option_properties_debug_method! { debug_text_decoration_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Color, Node, Role, TextDecoration, TextDecorationStyle};
+
+            const TEST_TEXT_DECORATION: TextDecoration = TextDecoration {
+                style: TextDecorationStyle::Dotted,
+                color: Color {
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    alpha: 255,
+                },
+            };
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(TEST_TEXT_DECORATION);
+                assert_eq!(node.$getter(), Some(TEST_TEXT_DECORATION));
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(TEST_TEXT_DECORATION);
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
+        })*
     }
 }
 
@@ -1188,6 +1503,34 @@ macro_rules! length_slice_property_methods {
         $(property_methods! {
             $(#[$doc])*
             ($id, $getter, get_length_slice_property, &[u8], $setter, set_length_slice_property, impl Into<Box<[u8]>>, $clearer)
+        })*
+        impl Node {
+            slice_properties_debug_method! { debug_length_slice_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_empty());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter([]);
+                assert!(node.$getter().is_empty());
+                node.$setter([1, 2]);
+                assert_eq!(node.$getter(), &[1, 2]);
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter([1, 2]);
+                node.$clearer();
+                assert!(node.$getter().is_empty());
+            }
         })*
     }
 }
@@ -1198,6 +1541,36 @@ macro_rules! coord_slice_property_methods {
             $(#[$doc])*
             ($id, $getter, get_coord_slice_property, Option<&[f32]>, $setter, set_coord_slice_property, impl Into<Box<[f32]>>, $clearer)
         })*
+        impl Node {
+            option_properties_debug_method! { debug_coord_slice_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter([]);
+                let expected: Option<&[f32]> = Some(&[]);
+                assert_eq!(node.$getter(), expected);
+                node.$setter([1.0, 2.0]);
+                let expected: Option<&[f32]> = Some(&[1.0, 2.0]);
+                assert_eq!(node.$getter(), expected);
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter([1.0, 2.0]);
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
+        })*
     }
 }
 
@@ -1207,30 +1580,44 @@ macro_rules! bool_property_methods {
             $(#[$doc])*
             ($id, $getter, get_bool_property, Option<bool>, $setter, set_bool_property, bool, $clearer)
         })*
+        impl Node {
+            option_properties_debug_method! { debug_bool_properties, [$($getter,)*] }
+        }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(true);
+                assert_eq!(node.$getter(), Some(true));
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(true);
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
+        })*
     }
 }
 
 macro_rules! unique_enum_property_methods {
-    ($($(#[$doc:meta])* ($id:ident, $getter:ident, $setter:ident, $clearer:ident)),+) => {
+    ($($(#[$doc:meta])* ($id:ident, $getter:ident, $setter:ident, $clearer:ident, $variant:ident)),+) => {
         impl Node {
             $($(#[$doc])*
             #[inline]
             pub fn $getter(&self) -> Option<$id> {
                 match self.properties.indices.get(&self.properties.values, PropertyId::$id) {
-                    PropertyValue::None => None,
                     PropertyValue::$id(value) => Some(*value),
-                    _ => unexpected_property_type(),
-                }
-            })*
-        }
-        impl NodeBuilder {
-            $($(#[$doc])*
-            #[inline]
-            pub fn $getter(&self) -> Option<$id> {
-                match self.properties.indices.get(&self.properties.values, PropertyId::$id) {
-                    PropertyValue::None => None,
-                    PropertyValue::$id(value) => Some(*value),
-                    _ => unexpected_property_type(),
+                    _ => None,
                 }
             }
             #[inline]
@@ -1241,11 +1628,36 @@ macro_rules! unique_enum_property_methods {
             pub fn $clearer(&mut self) {
                 self.properties.clear(PropertyId::$id);
             })*
+            option_properties_debug_method! { debug_unique_enum_properties, [$($getter,)*] }
         }
+        $(#[cfg(test)]
+        mod $getter {
+            use super::{Node, Role};
+
+            #[test]
+            fn getter_should_return_default_value() {
+                let node = Node::new(Role::Unknown);
+                assert!(node.$getter().is_none());
+            }
+            #[test]
+            fn setter_should_update_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                let variant = super::$id::$variant;
+                node.$setter(variant);
+                assert_eq!(node.$getter(), Some(variant));
+            }
+            #[test]
+            fn clearer_should_reset_the_property() {
+                let mut node = Node::new(Role::Unknown);
+                node.$setter(super::$id::$variant);
+                node.$clearer();
+                assert!(node.$getter().is_none());
+            }
+        })*
     }
 }
 
-impl NodeBuilder {
+impl Node {
     #[inline]
     pub fn new(role: Role) -> Self {
         Self {
@@ -1253,25 +1665,9 @@ impl NodeBuilder {
             ..Default::default()
         }
     }
-
-    pub fn build(self) -> Node {
-        Node {
-            role: self.role,
-            actions: self.actions,
-            flags: self.flags,
-            properties: self.properties.build(),
-        }
-    }
 }
 
 impl Node {
-    #[inline]
-    pub fn role(&self) -> Role {
-        self.role
-    }
-}
-
-impl NodeBuilder {
     #[inline]
     pub fn role(&self) -> Role {
         self.role
@@ -1280,16 +1676,7 @@ impl NodeBuilder {
     pub fn set_role(&mut self, value: Role) {
         self.role = value;
     }
-}
 
-impl Node {
-    #[inline]
-    pub fn supports_action(&self, action: Action) -> bool {
-        (self.actions & action.mask()) != 0
-    }
-}
-
-impl NodeBuilder {
     #[inline]
     pub fn supports_action(&self, action: Action) -> bool {
         (self.actions & action.mask()) != 0
@@ -1306,14 +1693,37 @@ impl NodeBuilder {
     pub fn clear_actions(&mut self) {
         self.actions = 0;
     }
+
+    /// Return whether the specified action is in the set supported on this node's
+    /// direct children in the filtered tree.
+    #[inline]
+    pub fn child_supports_action(&self, action: Action) -> bool {
+        (self.child_actions & action.mask()) != 0
+    }
+    /// Add the specified action to the set supported on this node's direct
+    /// children in the filtered tree.
+    #[inline]
+    pub fn add_child_action(&mut self, action: Action) {
+        self.child_actions |= action.mask();
+    }
+    /// Remove the specified action from the set supported on this node's direct
+    /// children in the filtered tree.
+    #[inline]
+    pub fn remove_child_action(&mut self, action: Action) {
+        self.child_actions &= !(action.mask());
+    }
+    /// Clear the set of actions supported on this node's direct children in the
+    /// filtered tree.
+    #[inline]
+    pub fn clear_child_actions(&mut self) {
+        self.child_actions = 0;
+    }
 }
 
 flag_methods! {
-    (Hovered, is_hovered, set_hovered, clear_hovered),
     /// Exclude this node and its descendants from the tree presented to
     /// assistive technologies, and from hit testing.
     (Hidden, is_hidden, set_hidden, clear_hidden),
-    (Linked, is_linked, set_linked, clear_linked),
     (Multiselectable, is_multiselectable, set_multiselectable, clear_multiselectable),
     (Required, is_required, set_required, clear_required),
     (Visited, is_visited, set_visited, clear_visited),
@@ -1325,11 +1735,10 @@ flag_methods! {
     /// is in touch exploration mode, e.g. a virtual keyboard normally
     /// behaves this way.
     (TouchTransparent, is_touch_transparent, set_touch_transparent, clear_touch_transparent),
-    /// Use for a textbox that allows focus/selection but not input.
+    /// Use for a text widget that allows focus/selection but not input.
     (ReadOnly, is_read_only, set_read_only, clear_read_only),
     /// Use for a control or group of controls that disallows input.
     (Disabled, is_disabled, set_disabled, clear_disabled),
-    (Bold, is_bold, set_bold, clear_bold),
     (Italic, is_italic, set_italic, clear_italic),
     /// Indicates that this node clips its children, i.e. may have
     /// `overflow: hidden` or clip children by default.
@@ -1360,10 +1769,12 @@ copy_type_getters! {
     (get_rect_property, Rect, Rect),
     (get_node_id_property, NodeId, NodeId),
     (get_f64_property, f64, F64),
+    (get_f32_property, f32, F32),
     (get_usize_property, usize, Usize),
-    (get_color_property, u32, Color),
+    (get_color_property, Color, Color),
     (get_text_decoration_property, TextDecoration, TextDecoration),
-    (get_bool_property, bool, Bool)
+    (get_bool_property, bool, Bool),
+    (get_tree_id_property, TreeId, TreeId)
 }
 
 box_type_setters! {
@@ -1378,10 +1789,12 @@ copy_type_setters! {
     (set_rect_property, Rect, Rect),
     (set_node_id_property, NodeId, NodeId),
     (set_f64_property, f64, F64),
+    (set_f32_property, f32, F32),
     (set_usize_property, usize, Usize),
-    (set_color_property, u32, Color),
+    (set_color_property, Color, Color),
     (set_text_decoration_property, TextDecoration, TextDecoration),
-    (set_bool_property, bool, Bool)
+    (set_bool_property, bool, Bool),
+    (set_tree_id_property, TreeId, TreeId)
 }
 
 vec_type_methods! {
@@ -1408,6 +1821,9 @@ node_id_vec_property_methods! {
 }
 
 node_id_property_methods! {
+    /// For a composite widget such as a listbox, tree, or grid, identifies
+    /// the currently active descendant. Used when focus remains on the container
+    /// while the active item changes.
     (ActiveDescendant, active_descendant, set_active_descendant, clear_active_descendant),
     (ErrorMessage, error_message, set_error_message, clear_error_message),
     (InPageLinkTarget, in_page_link_target, set_in_page_link_target, clear_in_page_link_target),
@@ -1418,7 +1834,11 @@ node_id_property_methods! {
 }
 
 string_property_methods! {
-    (Name, name, set_name, clear_name),
+    /// The label of a control that can have a label. If the label is specified
+    /// via the [`Node::labelled_by`] relation, this doesn't need to be set.
+    /// Note that the text content of a node with the [`Role::Label`] role
+    /// should be provided via [`Node::value`], not this property.
+    (Label, label, set_label, clear_label),
     (Description, description, set_description, clear_description),
     (Value, value, set_value, clear_value),
     /// A single character, usually part of this node's name, that can be pressed,
@@ -1443,12 +1863,13 @@ string_property_methods! {
     /// modifiers(s), that will perform this node's default action.
     /// The value of this property should be in a human-friendly format.
     (KeyboardShortcut, keyboard_shortcut, set_keyboard_shortcut, clear_keyboard_shortcut),
+    /// An [IETF language tag](https://www.rfc-editor.org/info/bcp47).
     /// Only present when different from parent.
     (Language, language, set_language, clear_language),
     /// If a text input has placeholder text, it should be exposed
-    /// through this property rather than [`name`].
+    /// through this property rather than [`label`].
     ///
-    /// [`name`]: Node::name
+    /// [`label`]: Node::label
     (Placeholder, placeholder, set_placeholder, clear_placeholder),
     /// An optional string that may override an assistive technology's
     /// description of the node's role. Only provide this for custom control types.
@@ -1460,13 +1881,15 @@ string_property_methods! {
     /// and assistive technologies do not support this feature.
     (StateDescription, state_description, set_state_description, clear_state_description),
     /// If a node's only accessible name comes from a tooltip, it should be
-    /// exposed through this property rather than [`name`].
+    /// exposed through this property rather than [`label`].
     ///
-    /// [`name`]: Node::name
+    /// [`label`]: Node::label
     (Tooltip, tooltip, set_tooltip, clear_tooltip),
     (Url, url, set_url, clear_url),
     (RowIndexText, row_index_text, set_row_index_text, clear_row_index_text),
-    (ColumnIndexText, column_index_text, set_column_index_text, clear_column_index_text)
+    (ColumnIndexText, column_index_text, set_column_index_text, clear_column_index_text),
+    (BrailleLabel, braille_label, set_braille_label, clear_braille_label),
+    (BrailleRoleDescription, braille_role_description, set_braille_role_description, clear_braille_role_description)
 }
 
 f64_property_methods! {
@@ -1480,7 +1903,10 @@ f64_property_methods! {
     (MinNumericValue, min_numeric_value, set_min_numeric_value, clear_min_numeric_value),
     (MaxNumericValue, max_numeric_value, set_max_numeric_value, clear_max_numeric_value),
     (NumericValueStep, numeric_value_step, set_numeric_value_step, clear_numeric_value_step),
-    (NumericValueJump, numeric_value_jump, set_numeric_value_jump, clear_numeric_value_jump),
+    (NumericValueJump, numeric_value_jump, set_numeric_value_jump, clear_numeric_value_jump)
+}
+
+f32_property_methods! {
     /// Font size is in pixels.
     (FontSize, font_size, set_font_size, clear_font_size),
     /// Font weight can take on any arbitrary numeric value. Increments of 100 in
@@ -1496,16 +1922,21 @@ usize_property_methods! {
     (RowSpan, row_span, set_row_span, clear_row_span),
     (ColumnSpan, column_span, set_column_span, clear_column_span),
     (Level, level, set_level, clear_level),
+    /// For containers like [`Role::ListBox`], specifies the total number of items.
     (SizeOfSet, size_of_set, set_size_of_set, clear_size_of_set),
+    /// For items like [`Role::ListBoxOption`], specifies their index in the item list.
+    /// This may not exceed the value of [`size_of_set`] as set on the container.
+    ///
+    /// [`size_of_set`]: Node::size_of_set
     (PositionInSet, position_in_set, set_position_in_set, clear_position_in_set)
 }
 
 color_property_methods! {
-    /// For [`Role::ColorWell`], specifies the selected color in RGBA.
+    /// For [`Role::ColorWell`], specifies the selected color.
     (ColorValue, color_value, set_color_value, clear_color_value),
-    /// Background color in RGBA.
+    /// Background color.
     (BackgroundColor, background_color, set_background_color, clear_background_color),
-    /// Foreground color in RGBA.
+    /// Foreground color.
     (ForegroundColor, foreground_color, set_foreground_color, clear_foreground_color)
 }
 
@@ -1516,7 +1947,7 @@ text_decoration_property_methods! {
 }
 
 length_slice_property_methods! {
-    /// For inline text. The length (non-inclusive) of each character
+    /// For text runs, the length (non-inclusive) of each character
     /// in UTF-8 code units (bytes). The sum of these lengths must equal
     /// the length of [`value`], also in bytes.
     ///
@@ -1526,7 +1957,7 @@ length_slice_property_methods! {
     /// the lengths of the characters from the text itself; this information
     /// must be provided by the text editing implementation.
     ///
-    /// If this node is the last text box in a line that ends with a hard
+    /// If this node is the last text run in a line that ends with a hard
     /// line break, that line break should be included at the end of this
     /// node's value as either a CRLF or LF; in both cases, the line break
     /// should be counted as a single character for the sake of this slice.
@@ -1536,9 +1967,16 @@ length_slice_property_methods! {
     /// [`value`]: Node::value
     (CharacterLengths, character_lengths, set_character_lengths, clear_character_lengths),
 
-    /// For inline text. The length of each word in characters, as defined
-    /// in [`character_lengths`]. The sum of these lengths must equal
-    /// the length of [`character_lengths`].
+    /// For text runs, the start index of each word in characters, as defined
+    /// in [`character_lengths`]. This list must be sorted.
+    ///
+    /// If this text run doesn't contain the start of any words, but only
+    /// the middle or end of a word, this list must be empty.
+    ///
+    /// If this text run is the first in the document or the first in a paragraph
+    /// (that is, the previous run ends with a newline character), then the first
+    /// character of the run is implicitly the start of a word. In this case,
+    /// beginning this list with `0` is permitted but not necessary.
     ///
     /// The end of each word is the beginning of the next word; there are no
     /// characters that are not considered part of a word. Trailing whitespace
@@ -1558,11 +1996,11 @@ length_slice_property_methods! {
     /// word boundaries itself.
     ///
     /// [`character_lengths`]: Node::character_lengths
-    (WordLengths, word_lengths, set_word_lengths, clear_word_lengths)
+    (WordStarts, word_starts, set_word_starts, clear_word_starts)
 }
 
 coord_slice_property_methods! {
-    /// For inline text. This is the position of each character within
+    /// For text runs, this is the position of each character within
     /// the node's bounding box, in the direction given by
     /// [`text_direction`], in the coordinate space of this node.
     ///
@@ -1580,7 +2018,7 @@ coord_slice_property_methods! {
     /// [`character_lengths`]: Node::character_lengths
     (CharacterPositions, character_positions, set_character_positions, clear_character_positions),
 
-    /// For inline text. This is the advance width of each character,
+    /// For text runs, this is the advance width of each character,
     /// in the direction given by [`text_direction`], in the coordinate
     /// space of this node.
     ///
@@ -1621,20 +2059,19 @@ bool_property_methods! {
 }
 
 unique_enum_property_methods! {
-    (Invalid, invalid, set_invalid, clear_invalid),
-    (Toggled, toggled, set_toggled, clear_toggled),
-    (Live, live, set_live, clear_live),
-    (DefaultActionVerb, default_action_verb, set_default_action_verb, clear_default_action_verb),
-    (TextDirection, text_direction, set_text_direction, clear_text_direction),
-    (Orientation, orientation, set_orientation, clear_orientation),
-    (SortDirection, sort_direction, set_sort_direction, clear_sort_direction),
-    (AriaCurrent, aria_current, set_aria_current, clear_aria_current),
-    (AutoComplete, auto_complete, set_auto_complete, clear_auto_complete),
-    (HasPopup, has_popup, set_has_popup, clear_has_popup),
+    (Invalid, invalid, set_invalid, clear_invalid, Grammar),
+    (Toggled, toggled, set_toggled, clear_toggled, True),
+    (Live, live, set_live, clear_live, Polite),
+    (TextDirection, text_direction, set_text_direction, clear_text_direction, RightToLeft),
+    (Orientation, orientation, set_orientation, clear_orientation, Vertical),
+    (SortDirection, sort_direction, set_sort_direction, clear_sort_direction, Descending),
+    (AriaCurrent, aria_current, set_aria_current, clear_aria_current, True),
+    (AutoComplete, auto_complete, set_auto_complete, clear_auto_complete, List),
+    (HasPopup, has_popup, set_has_popup, clear_has_popup, Menu),
     /// The list style type. Only available on list items.
-    (ListStyle, list_style, set_list_style, clear_list_style),
-    (TextAlign, text_align, set_text_align, clear_text_align),
-    (VerticalOffset, vertical_offset, set_vertical_offset, clear_vertical_offset)
+    (ListStyle, list_style, set_list_style, clear_list_style, Disc),
+    (TextAlign, text_align, set_text_align, clear_text_align, Right),
+    (VerticalOffset, vertical_offset, set_vertical_offset, clear_vertical_offset, Superscript)
 }
 
 property_methods! {
@@ -1664,11 +2101,245 @@ property_methods! {
     /// [`transform`]: Node::transform
     (Bounds, bounds, get_rect_property, Option<Rect>, set_bounds, set_rect_property, Rect, clear_bounds),
 
-    (TextSelection, text_selection, get_text_selection_property, Option<&TextSelection>, set_text_selection, set_text_selection_property, impl Into<Box<TextSelection>>, clear_text_selection)
+    (TextSelection, text_selection, get_text_selection_property, Option<&TextSelection>, set_text_selection, set_text_selection_property, impl Into<Box<TextSelection>>, clear_text_selection),
+
+    /// The tree that this node grafts. When set, this node acts as a graft
+    /// point, and its child is the root of the specified subtree.
+    ///
+    /// A graft node must be created before its subtree is pushed.
+    ///
+    /// Removing a graft node or clearing this property removes its subtree,
+    /// unless a new graft node is provided in the same update.
+    (TreeId, tree_id, get_tree_id_property, Option<TreeId>, set_tree_id, set_tree_id_property, TreeId, clear_tree_id)
+}
+
+impl Node {
+    option_properties_debug_method! { debug_option_properties, [transform, bounds, text_selection, tree_id,] }
+}
+
+#[cfg(test)]
+mod transform {
+    use super::{Affine, Node, Role};
+
+    #[test]
+    fn getter_should_return_default_value() {
+        let node = Node::new(Role::Unknown);
+        assert!(node.transform().is_none());
+    }
+    #[test]
+    fn setter_should_update_the_property() {
+        let mut node = Node::new(Role::Unknown);
+        node.set_transform(Affine::IDENTITY);
+        assert_eq!(node.transform(), Some(&Affine::IDENTITY));
+    }
+    #[test]
+    fn clearer_should_reset_the_property() {
+        let mut node = Node::new(Role::Unknown);
+        node.set_transform(Affine::IDENTITY);
+        node.clear_transform();
+        assert!(node.transform().is_none());
+    }
+}
+
+#[cfg(test)]
+mod bounds {
+    use super::{Node, Rect, Role};
+
+    #[test]
+    fn getter_should_return_default_value() {
+        let node = Node::new(Role::Unknown);
+        assert!(node.bounds().is_none());
+    }
+    #[test]
+    fn setter_should_update_the_property() {
+        let mut node = Node::new(Role::Unknown);
+        let value = Rect {
+            x0: 0.0,
+            y0: 1.0,
+            x1: 2.0,
+            y1: 3.0,
+        };
+        node.set_bounds(value);
+        assert_eq!(node.bounds(), Some(value));
+    }
+    #[test]
+    fn clearer_should_reset_the_property() {
+        let mut node = Node::new(Role::Unknown);
+        node.set_bounds(Rect {
+            x0: 0.0,
+            y0: 1.0,
+            x1: 2.0,
+            y1: 3.0,
+        });
+        node.clear_bounds();
+        assert!(node.bounds().is_none());
+    }
+}
+
+#[cfg(test)]
+mod text_selection {
+    use super::{Node, NodeId, Role, TextPosition, TextSelection};
+
+    #[test]
+    fn getter_should_return_default_value() {
+        let node = Node::new(Role::Unknown);
+        assert!(node.text_selection().is_none());
+    }
+    #[test]
+    fn setter_should_update_the_property() {
+        let mut node = Node::new(Role::Unknown);
+        let value = TextSelection {
+            anchor: TextPosition {
+                node: NodeId(0),
+                character_index: 0,
+            },
+            focus: TextPosition {
+                node: NodeId(0),
+                character_index: 2,
+            },
+        };
+        node.set_text_selection(value);
+        assert_eq!(node.text_selection(), Some(&value));
+    }
+    #[test]
+    fn clearer_should_reset_the_property() {
+        let mut node = Node::new(Role::Unknown);
+        node.set_text_selection(TextSelection {
+            anchor: TextPosition {
+                node: NodeId(0),
+                character_index: 0,
+            },
+            focus: TextPosition {
+                node: NodeId(0),
+                character_index: 2,
+            },
+        });
+        node.clear_text_selection();
+        assert!(node.text_selection().is_none());
+    }
+}
+
+#[cfg(test)]
+mod tree_id {
+    use super::{Node, Role, TreeId, Uuid};
+
+    #[test]
+    fn getter_should_return_default_value() {
+        let node = Node::new(Role::GenericContainer);
+        assert!(node.tree_id().is_none());
+    }
+    #[test]
+    fn setter_should_update_the_property() {
+        let mut node = Node::new(Role::GenericContainer);
+        let value = TreeId(Uuid::nil());
+        node.set_tree_id(value);
+        assert_eq!(node.tree_id(), Some(value));
+    }
+    #[test]
+    fn clearer_should_reset_the_property() {
+        let mut node = Node::new(Role::GenericContainer);
+        node.set_tree_id(TreeId(Uuid::nil()));
+        node.clear_tree_id();
+        assert!(node.tree_id().is_none());
+    }
 }
 
 vec_property_methods! {
     (CustomActions, CustomAction, custom_actions, get_custom_action_vec, set_custom_actions, set_custom_action_vec, push_custom_action, push_to_custom_action_vec, clear_custom_actions)
+}
+
+#[cfg(test)]
+mod custom_actions {
+    use super::{CustomAction, Node, Role};
+    use core::slice;
+
+    #[test]
+    fn getter_should_return_default_value() {
+        let node = Node::new(Role::Unknown);
+        assert!(node.custom_actions().is_empty());
+    }
+    #[test]
+    fn setter_should_update_the_property() {
+        let mut node = Node::new(Role::Unknown);
+        let value = alloc::vec![
+            CustomAction {
+                id: 0,
+                description: "first test action".into(),
+            },
+            CustomAction {
+                id: 1,
+                description: "second test action".into(),
+            },
+        ];
+        node.set_custom_actions(value.clone());
+        assert_eq!(node.custom_actions(), value);
+    }
+    #[test]
+    fn pusher_should_update_the_property() {
+        let mut node = Node::new(Role::Unknown);
+        let first_action = CustomAction {
+            id: 0,
+            description: "first test action".into(),
+        };
+        let second_action = CustomAction {
+            id: 1,
+            description: "second test action".into(),
+        };
+        node.push_custom_action(first_action.clone());
+        assert_eq!(node.custom_actions(), slice::from_ref(&first_action));
+        node.push_custom_action(second_action.clone());
+        assert_eq!(node.custom_actions(), &[first_action, second_action]);
+    }
+    #[test]
+    fn clearer_should_reset_the_property() {
+        let mut node = Node::new(Role::Unknown);
+        node.set_custom_actions([CustomAction {
+            id: 0,
+            description: "test action".into(),
+        }]);
+        node.clear_custom_actions();
+        assert!(node.custom_actions().is_empty());
+    }
+}
+
+impl fmt::Debug for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut fmt = f.debug_struct("Node");
+
+        fmt.field("role", &self.role());
+
+        let supported_actions = action_mask_to_action_vec(self.actions);
+        if !supported_actions.is_empty() {
+            fmt.field("actions", &supported_actions);
+        }
+
+        let child_supported_actions = action_mask_to_action_vec(self.child_actions);
+        if !child_supported_actions.is_empty() {
+            fmt.field("child_actions", &child_supported_actions);
+        }
+
+        self.debug_flag_properties(&mut fmt);
+        self.debug_node_id_vec_properties(&mut fmt);
+        self.debug_node_id_properties(&mut fmt);
+        self.debug_string_properties(&mut fmt);
+        self.debug_f64_properties(&mut fmt);
+        self.debug_f32_properties(&mut fmt);
+        self.debug_usize_properties(&mut fmt);
+        self.debug_color_properties(&mut fmt);
+        self.debug_text_decoration_properties(&mut fmt);
+        self.debug_length_slice_properties(&mut fmt);
+        self.debug_coord_slice_properties(&mut fmt);
+        self.debug_bool_properties(&mut fmt);
+        self.debug_unique_enum_properties(&mut fmt);
+        self.debug_option_properties(&mut fmt);
+
+        let custom_actions = self.custom_actions();
+        if !custom_actions.is_empty() {
+            fmt.field("custom_actions", &custom_actions);
+        }
+
+        fmt.finish()
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -1685,11 +2356,11 @@ macro_rules! serialize_property {
 
 #[cfg(feature = "serde")]
 macro_rules! deserialize_property {
-    ($builder:ident, $map:ident, $key:ident, { $($type:ident { $($id:ident),+ }),+ }) => {
+    ($props:ident, $map:ident, $key:ident, { $($type:ident { $($id:ident),+ }),+ }) => {
         match $key {
             $($(PropertyId::$id => {
                 let value = $map.next_value()?;
-                $builder.set(PropertyId::$id, PropertyValue::$type(value));
+                $props.set(PropertyId::$id, PropertyValue::$type(value));
             })*)*
             PropertyId::Unset => {
                 let _ = $map.next_value::<IgnoredAny>()?;
@@ -1721,6 +2392,7 @@ impl Serialize for Properties {
                 NodeId,
                 String,
                 F64,
+                F32,
                 Usize,
                 Color,
                 TextDecoration,
@@ -1730,7 +2402,6 @@ impl Serialize for Properties {
                 Invalid,
                 Toggled,
                 Live,
-                DefaultActionVerb,
                 TextDirection,
                 Orientation,
                 SortDirection,
@@ -1743,7 +2414,8 @@ impl Serialize for Properties {
                 Affine,
                 Rect,
                 TextSelection,
-                CustomActionVec
+                CustomActionVec,
+                TreeId
             });
         }
         map.end()
@@ -1766,9 +2438,9 @@ impl<'de> Visitor<'de> for PropertiesVisitor {
     where
         V: MapAccess<'de>,
     {
-        let mut builder = PropertiesBuilder::default();
+        let mut props = Properties::default();
         while let Some(id) = map.next_key()? {
-            deserialize_property!(builder, map, id, {
+            deserialize_property!(props, map, id, {
                 NodeIdVec {
                     Children,
                     Controls,
@@ -1789,7 +2461,7 @@ impl<'de> Visitor<'de> for PropertiesVisitor {
                     PopupFor
                 },
                 String {
-                    Name,
+                    Label,
                     Description,
                     Value,
                     AccessKey,
@@ -1806,7 +2478,9 @@ impl<'de> Visitor<'de> for PropertiesVisitor {
                     Tooltip,
                     Url,
                     RowIndexText,
-                    ColumnIndexText
+                    ColumnIndexText,
+                    BrailleLabel,
+                    BrailleRoleDescription
                 },
                 F64 {
                     ScrollX,
@@ -1819,7 +2493,9 @@ impl<'de> Visitor<'de> for PropertiesVisitor {
                     MinNumericValue,
                     MaxNumericValue,
                     NumericValueStep,
-                    NumericValueJump,
+                    NumericValueJump
+                },
+                F32 {
                     FontSize,
                     FontWeight
                 },
@@ -1846,7 +2522,7 @@ impl<'de> Visitor<'de> for PropertiesVisitor {
                 },
                 LengthSlice {
                     CharacterLengths,
-                    WordLengths
+                    WordStarts
                 },
                 CoordSlice {
                     CharacterPositions,
@@ -1859,7 +2535,6 @@ impl<'de> Visitor<'de> for PropertiesVisitor {
                 Invalid { Invalid },
                 Toggled { Toggled },
                 Live { Live },
-                DefaultActionVerb { DefaultActionVerb },
                 TextDirection { TextDirection },
                 Orientation { Orientation },
                 SortDirection { SortDirection },
@@ -1872,11 +2547,12 @@ impl<'de> Visitor<'de> for PropertiesVisitor {
                 Affine { Transform },
                 Rect { Bounds },
                 TextSelection { TextSelection },
-                CustomActionVec { CustomActions }
+                CustomActionVec { CustomActions },
+                TreeId { TreeId }
             });
         }
 
-        Ok(builder.build())
+        Ok(props)
     }
 }
 
@@ -1896,7 +2572,7 @@ macro_rules! add_schema_property {
         let name = format!("{:?}", $enum_value);
         let name = name[..1].to_ascii_lowercase() + &name[1..];
         let subschema = $gen.subschema_for::<$type>();
-        $properties.insert(name, subschema);
+        $properties.insert(name, SchemaValue::from(subschema));
     }};
 }
 
@@ -1910,12 +2586,12 @@ macro_rules! add_properties_to_schema {
 #[cfg(feature = "schemars")]
 impl JsonSchema for Properties {
     #[inline]
-    fn schema_name() -> String {
+    fn schema_name() -> Cow<'static, str> {
         "Properties".into()
     }
 
     fn json_schema(gen: &mut SchemaGenerator) -> Schema {
-        let mut properties = SchemaMap::<String, Schema>::new();
+        let mut properties = SchemaMap::<String, SchemaValue>::new();
         add_properties_to_schema!(gen, properties, {
             Vec<NodeId> {
                 Children,
@@ -1937,7 +2613,7 @@ impl JsonSchema for Properties {
                 PopupFor
             },
             Box<str> {
-                Name,
+                Label,
                 Description,
                 Value,
                 AccessKey,
@@ -1954,7 +2630,9 @@ impl JsonSchema for Properties {
                 Tooltip,
                 Url,
                 RowIndexText,
-                ColumnIndexText
+                ColumnIndexText,
+                BrailleLabel,
+                BrailleRoleDescription
             },
             f64 {
                 ScrollX,
@@ -1967,7 +2645,9 @@ impl JsonSchema for Properties {
                 MinNumericValue,
                 MaxNumericValue,
                 NumericValueStep,
-                NumericValueJump,
+                NumericValueJump
+            },
+            f32 {
                 FontSize,
                 FontWeight
             },
@@ -1982,7 +2662,7 @@ impl JsonSchema for Properties {
                 SizeOfSet,
                 PositionInSet
             },
-            u32 {
+            Color {
                 ColorValue,
                 BackgroundColor,
                 ForegroundColor
@@ -1994,7 +2674,7 @@ impl JsonSchema for Properties {
             },
             Box<[u8]> {
                 CharacterLengths,
-                WordLengths
+                WordStarts
             },
             Box<[f32]> {
                 CharacterPositions,
@@ -2007,7 +2687,6 @@ impl JsonSchema for Properties {
             Invalid { Invalid },
             Toggled { Toggled },
             Live { Live },
-            DefaultActionVerb { DefaultActionVerb },
             TextDirection { TextDirection },
             Orientation { Orientation },
             SortDirection { SortDirection },
@@ -2022,18 +2701,10 @@ impl JsonSchema for Properties {
             TextSelection { TextSelection },
             Vec<CustomAction> { CustomActions }
         });
-        SchemaObject {
-            instance_type: Some(InstanceType::Object.into()),
-            object: Some(
-                ObjectValidation {
-                    properties,
-                    ..Default::default()
-                }
-                .into(),
-            ),
-            ..Default::default()
-        }
-        .into()
+        json_schema!({
+            "type": "object",
+            "properties": properties
+        })
     }
 }
 
@@ -2047,8 +2718,6 @@ impl JsonSchema for Properties {
 pub struct Tree {
     /// The identifier of the tree's root node.
     pub root: NodeId,
-    /// The name of the application this tree belongs to.
-    pub app_name: Option<String>,
     /// The name of the UI toolkit in use.
     pub toolkit_name: Option<String>,
     /// The version of the UI toolkit.
@@ -2060,7 +2729,6 @@ impl Tree {
     pub fn new(root: NodeId) -> Tree {
         Tree {
             root,
-            app_name: None,
             toolkit_name: None,
             toolkit_version: None,
         }
@@ -2112,12 +2780,67 @@ pub struct TreeUpdate {
     /// a tree.
     pub tree: Option<Tree>,
 
+    /// The identifier of the tree that this update applies to.
+    ///
+    /// Use [`TreeId::ROOT`] for the main/root tree. For subtrees, use a unique
+    /// [`TreeId`] that identifies the subtree.
+    ///
+    /// When updating a subtree (non-ROOT tree_id):
+    /// - A graft node with [`Node::tree_id`] set to this tree's ID must already
+    ///   exist in the parent tree before the first subtree update.
+    /// - The first update for a subtree must include [`tree`](Self::tree) data.
+    pub tree_id: TreeId,
+
     /// The node within this tree that has keyboard focus when the native
     /// host (e.g. window) has focus. If no specific node within the tree
     /// has keyboard focus, this must be set to the root. The latest focus state
     /// must be provided with every tree update, even if the focus state
     /// didn't change in a given update.
+    ///
+    /// For subtrees, this specifies which node has focus when the subtree
+    /// itself is focused (i.e., when focus is on the graft node in the parent
+    /// tree).
     pub focus: NodeId,
+}
+
+/// The amount by which to scroll in the direction specified by one of the
+/// `Scroll` actions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schemars", derive(JsonSchema))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(
+    feature = "pyo3",
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
+)]
+#[repr(u8)]
+pub enum ScrollUnit {
+    /// A single item of a list, line of text (for vertical scrolling),
+    /// character (for horizontal scrolling), or an approximation of
+    /// one of these.
+    Item,
+    /// The amount of content that fits in the viewport.
+    Page,
+}
+
+/// A suggestion about where the node being scrolled into view should be
+/// positioned relative to the edges of the scrollable container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schemars", derive(JsonSchema))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[cfg_attr(
+    feature = "pyo3",
+    pyclass(module = "accesskit", rename_all = "SCREAMING_SNAKE_CASE", eq)
+)]
+#[repr(u8)]
+pub enum ScrollHint {
+    TopLeft,
+    BottomRight,
+    TopEdge,
+    BottomEdge,
+    LeftEdge,
+    RightEdge,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2129,9 +2852,11 @@ pub enum ActionData {
     CustomAction(i32),
     Value(Box<str>),
     NumericValue(f64),
-    /// Optional target rectangle for [`Action::ScrollIntoView`], in
-    /// the coordinate space of the action's target node.
-    ScrollTargetRect(Rect),
+    ScrollUnit(ScrollUnit),
+    /// Optional suggestion for [`Action::ScrollIntoView`], specifying
+    /// the preferred position of the target node relative to the scrollable
+    /// container's viewport.
+    ScrollHint(ScrollHint),
     /// Target for [`Action::ScrollToPoint`], in platform-native coordinates
     /// relative to the origin of the tree's container (e.g. window).
     ScrollToPoint(Point),
@@ -2148,7 +2873,8 @@ pub enum ActionData {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 pub struct ActionRequest {
     pub action: Action,
-    pub target: NodeId,
+    pub target_tree: TreeId,
+    pub target_node: NodeId,
     pub data: Option<ActionData>,
 }
 
@@ -2202,4 +2928,246 @@ pub trait DeactivationHandler {
     /// The thread on which this method is called is platform-dependent.
     /// Refer to the platform adapter documentation for more details.
     fn deactivate_accessibility(&mut self);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::format;
+
+    #[test]
+    fn u64_should_be_convertible_to_node_id() {
+        assert_eq!(NodeId::from(0u64), NodeId(0));
+        assert_eq!(NodeId::from(1u64), NodeId(1));
+    }
+
+    #[test]
+    fn node_id_should_be_convertible_to_u64() {
+        assert_eq!(u64::from(NodeId(0)), 0u64);
+        assert_eq!(u64::from(NodeId(1)), 1u64);
+    }
+
+    #[test]
+    fn node_id_should_have_debug_repr() {
+        assert_eq!(&format!("{:?}", NodeId(0)), "#0");
+        assert_eq!(&format!("{:?}", NodeId(1)), "#1");
+    }
+
+    #[test]
+    fn action_n_should_return_the_corresponding_variant() {
+        assert_eq!(Action::n(0), Some(Action::Click));
+        assert_eq!(Action::n(1), Some(Action::Focus));
+        assert_eq!(Action::n(2), Some(Action::Blur));
+        assert_eq!(Action::n(3), Some(Action::Collapse));
+        assert_eq!(Action::n(4), Some(Action::Expand));
+        assert_eq!(Action::n(5), Some(Action::CustomAction));
+        assert_eq!(Action::n(6), Some(Action::Decrement));
+        assert_eq!(Action::n(7), Some(Action::Increment));
+        assert_eq!(Action::n(8), Some(Action::HideTooltip));
+        assert_eq!(Action::n(9), Some(Action::ShowTooltip));
+        assert_eq!(Action::n(10), Some(Action::ReplaceSelectedText));
+        assert_eq!(Action::n(11), Some(Action::ScrollDown));
+        assert_eq!(Action::n(12), Some(Action::ScrollLeft));
+        assert_eq!(Action::n(13), Some(Action::ScrollRight));
+        assert_eq!(Action::n(14), Some(Action::ScrollUp));
+        assert_eq!(Action::n(15), Some(Action::ScrollIntoView));
+        assert_eq!(Action::n(16), Some(Action::ScrollToPoint));
+        assert_eq!(Action::n(17), Some(Action::SetScrollOffset));
+        assert_eq!(Action::n(18), Some(Action::SetTextSelection));
+        assert_eq!(
+            Action::n(19),
+            Some(Action::SetSequentialFocusNavigationStartingPoint)
+        );
+        assert_eq!(Action::n(20), Some(Action::SetValue));
+        assert_eq!(Action::n(21), Some(Action::ShowContextMenu));
+        assert_eq!(Action::n(22), None);
+    }
+
+    #[test]
+    fn empty_action_mask_should_be_converted_to_empty_vec() {
+        assert_eq!(
+            Vec::<Action>::new(),
+            action_mask_to_action_vec(Node::new(Role::Unknown).actions)
+        );
+    }
+
+    #[test]
+    fn action_mask_should_be_convertible_to_vec() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_action(Action::Click);
+        assert_eq!(
+            &[Action::Click],
+            action_mask_to_action_vec(node.actions).as_slice()
+        );
+
+        let mut node = Node::new(Role::Unknown);
+        node.add_action(Action::ShowContextMenu);
+        assert_eq!(
+            &[Action::ShowContextMenu],
+            action_mask_to_action_vec(node.actions).as_slice()
+        );
+
+        let mut node = Node::new(Role::Unknown);
+        node.add_action(Action::Click);
+        node.add_action(Action::ShowContextMenu);
+        assert_eq!(
+            &[Action::Click, Action::ShowContextMenu],
+            action_mask_to_action_vec(node.actions).as_slice()
+        );
+
+        let mut node = Node::new(Role::Unknown);
+        node.add_action(Action::Focus);
+        node.add_action(Action::Blur);
+        node.add_action(Action::Collapse);
+        assert_eq!(
+            &[Action::Focus, Action::Blur, Action::Collapse],
+            action_mask_to_action_vec(node.actions).as_slice()
+        );
+    }
+
+    #[test]
+    fn new_node_should_have_user_provided_role() {
+        let node = Node::new(Role::Button);
+        assert_eq!(node.role(), Role::Button);
+    }
+
+    #[test]
+    fn node_role_setter_should_update_the_role() {
+        let mut node = Node::new(Role::Button);
+        node.set_role(Role::CheckBox);
+        assert_eq!(node.role(), Role::CheckBox);
+    }
+
+    macro_rules! assert_absent_action {
+        ($node:ident, $action:ident) => {
+            assert!(!$node.supports_action(Action::$action));
+            assert!(!$node.child_supports_action(Action::$action));
+        };
+    }
+
+    #[test]
+    fn new_node_should_not_support_anyaction() {
+        let node = Node::new(Role::Unknown);
+        assert_absent_action!(node, Click);
+        assert_absent_action!(node, Focus);
+        assert_absent_action!(node, Blur);
+        assert_absent_action!(node, Collapse);
+        assert_absent_action!(node, Expand);
+        assert_absent_action!(node, CustomAction);
+        assert_absent_action!(node, Decrement);
+        assert_absent_action!(node, Increment);
+        assert_absent_action!(node, HideTooltip);
+        assert_absent_action!(node, ShowTooltip);
+        assert_absent_action!(node, ReplaceSelectedText);
+        assert_absent_action!(node, ScrollDown);
+        assert_absent_action!(node, ScrollLeft);
+        assert_absent_action!(node, ScrollRight);
+        assert_absent_action!(node, ScrollUp);
+        assert_absent_action!(node, ScrollIntoView);
+        assert_absent_action!(node, ScrollToPoint);
+        assert_absent_action!(node, SetScrollOffset);
+        assert_absent_action!(node, SetTextSelection);
+        assert_absent_action!(node, SetSequentialFocusNavigationStartingPoint);
+        assert_absent_action!(node, SetValue);
+        assert_absent_action!(node, ShowContextMenu);
+    }
+
+    #[test]
+    fn node_add_action_should_add_the_action() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_action(Action::Focus);
+        assert!(node.supports_action(Action::Focus));
+        node.add_action(Action::Blur);
+        assert!(node.supports_action(Action::Blur));
+    }
+
+    #[test]
+    fn node_add_child_action_should_add_the_action() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_child_action(Action::Focus);
+        assert!(node.child_supports_action(Action::Focus));
+        node.add_child_action(Action::Blur);
+        assert!(node.child_supports_action(Action::Blur));
+    }
+
+    #[test]
+    fn node_add_action_should_do_nothing_if_the_action_is_already_supported() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_action(Action::Focus);
+        node.add_action(Action::Focus);
+        assert!(node.supports_action(Action::Focus));
+    }
+
+    #[test]
+    fn node_add_child_action_should_do_nothing_if_the_action_is_already_supported() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_child_action(Action::Focus);
+        node.add_child_action(Action::Focus);
+        assert!(node.child_supports_action(Action::Focus));
+    }
+
+    #[test]
+    fn node_remove_action_should_remove_the_action() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_action(Action::Blur);
+        node.remove_action(Action::Blur);
+        assert!(!node.supports_action(Action::Blur));
+    }
+
+    #[test]
+    fn node_remove_child_action_should_remove_the_action() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_child_action(Action::Blur);
+        node.remove_child_action(Action::Blur);
+        assert!(!node.child_supports_action(Action::Blur));
+    }
+
+    #[test]
+    fn node_clear_actions_should_remove_all_actions() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_action(Action::Focus);
+        node.add_action(Action::Blur);
+        node.clear_actions();
+        assert!(!node.supports_action(Action::Focus));
+        assert!(!node.supports_action(Action::Blur));
+    }
+
+    #[test]
+    fn node_clear_child_actions_should_remove_all_actions() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_child_action(Action::Focus);
+        node.add_child_action(Action::Blur);
+        node.clear_child_actions();
+        assert!(!node.child_supports_action(Action::Focus));
+        assert!(!node.child_supports_action(Action::Blur));
+    }
+
+    #[test]
+    fn node_should_have_debug_repr() {
+        let mut node = Node::new(Role::Unknown);
+        node.add_action(Action::Click);
+        node.add_action(Action::Focus);
+        node.add_child_action(Action::ScrollIntoView);
+        node.set_hidden();
+        node.set_multiselectable();
+        node.set_children([NodeId(0), NodeId(1)]);
+        node.set_active_descendant(NodeId(2));
+        node.push_custom_action(CustomAction {
+            id: 0,
+            description: "test action".into(),
+        });
+
+        assert_eq!(
+            &format!("{node:?}"),
+            r#"Node { role: Unknown, actions: [Click, Focus], child_actions: [ScrollIntoView], is_hidden: true, is_multiselectable: true, children: [#0, #1], active_descendant: #2, custom_actions: [CustomAction { id: 0, description: "test action" }] }"#
+        );
+    }
+
+    #[test]
+    fn new_tree_should_have_root_id() {
+        let tree = Tree::new(NodeId(1));
+        assert_eq!(tree.root, NodeId(1));
+        assert_eq!(tree.toolkit_name, None);
+        assert_eq!(tree.toolkit_version, None);
+    }
 }

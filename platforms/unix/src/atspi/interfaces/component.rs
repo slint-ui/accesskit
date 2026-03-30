@@ -4,8 +4,8 @@
 // the LICENSE-MIT file), at your option.
 
 use accesskit_atspi_common::{PlatformNode, Rect};
-use atspi::{CoordType, Layer};
-use zbus::{fdo, names::OwnedUniqueName};
+use atspi::{CoordType, Layer, ScrollType};
+use zbus::{fdo, interface, names::OwnedUniqueName};
 
 use crate::atspi::{ObjectId, OwnedObjectAddress};
 
@@ -24,7 +24,7 @@ impl ComponentInterface {
     }
 }
 
-#[dbus_interface(name = "org.a11y.atspi.Component")]
+#[interface(name = "org.a11y.atspi.Component")]
 impl ComponentInterface {
     fn contains(&self, x: i32, y: i32, coord_type: CoordType) -> fdo::Result<bool> {
         self.node
@@ -62,6 +62,10 @@ impl ComponentInterface {
 
     fn grab_focus(&self) -> fdo::Result<bool> {
         self.node.grab_focus().map_err(self.map_error())
+    }
+
+    fn scroll_to(&self, scroll_type: ScrollType) -> fdo::Result<bool> {
+        self.node.scroll_to(scroll_type).map_err(self.map_error())
     }
 
     fn scroll_to_point(&self, coord_type: CoordType, x: i32, y: i32) -> fdo::Result<bool> {

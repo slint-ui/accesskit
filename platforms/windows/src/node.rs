@@ -11,15 +11,21 @@
 #![allow(non_upper_case_globals)]
 
 use accesskit::{
-    Action, ActionData, ActionRequest, Live, NodeId, NodeIdContent, Orientation, Point, Role,
-    Toggled,
+    Action, ActionData, ActionRequest, AriaCurrent, HasPopup, Live, NodeId as LocalNodeId,
+    Orientation, Point, Role, SortDirection, Toggled, TreeId,
 };
-use accesskit_consumer::{FilterResult, Node, TreeState};
-use paste::paste;
-use std::sync::{atomic::Ordering, Arc, Weak};
+use accesskit_consumer::{FilterResult, Node, NodeId, Tree, TreeState};
+use std::{
+    fmt::Write,
+    sync::{atomic::Ordering, Arc, Weak},
+};
 use windows::{
     core::*,
-    Win32::{Foundation::*, System::Com::*, UI::Accessibility::*},
+    Win32::{
+        Foundation::*,
+        System::{Com::*, Variant::*},
+        UI::Accessibility::*,
+    },
 };
 
 use crate::{
@@ -29,13 +35,15 @@ use crate::{
     util::*,
 };
 
-const RUNTIME_ID_SIZE: usize = 3;
+const RUNTIME_ID_SIZE: usize = 5;
 
 fn runtime_id_from_node_id(id: NodeId) -> [i32; RUNTIME_ID_SIZE] {
-    static_assertions::assert_eq_size!(NodeIdContent, u64);
-    let id = id.0;
+    static_assertions::assert_eq_size!(NodeId, u128);
+    let id: u128 = id.into();
     [
         UiaAppendRuntimeId as _,
+        ((id >> 96) & 0xFFFFFFFF) as _,
+        ((id >> 64) & 0xFFFFFFFF) as _,
         ((id >> 32) & 0xFFFFFFFF) as _,
         (id & 0xFFFFFFFF) as _,
     ]
@@ -43,14 +51,14 @@ fn runtime_id_from_node_id(id: NodeId) -> [i32; RUNTIME_ID_SIZE] {
 
 pub(crate) struct NodeWrapper<'a>(pub(crate) &'a Node<'a>);
 
-impl<'a> NodeWrapper<'a> {
+impl NodeWrapper<'_> {
     fn control_type(&self) -> UIA_CONTROLTYPE_ID {
         let role = self.0.role();
         // TODO: Handle special cases. (#14)
         match role {
             Role::Unknown => UIA_CustomControlTypeId,
-            Role::InlineTextBox => UIA_CustomControlTypeId,
-            Role::Cell => UIA_DataItemControlTypeId,
+            Role::TextRun => UIA_CustomControlTypeId,
+            Role::Cell | Role::GridCell => UIA_DataItemControlTypeId,
             Role::Label => UIA_TextControlTypeId,
             Role::Image => UIA_ImageControlTypeId,
             Role::Link => UIA_HyperlinkControlTypeId,
@@ -93,11 +101,10 @@ impl<'a> NodeWrapper<'a> {
             Role::Abbr => UIA_TextControlTypeId,
             Role::Alert => UIA_TextControlTypeId,
             Role::AlertDialog => {
-                // Chromium's implementation suggests the use of
-                // UIA_TextControlTypeId, not UIA_PaneControlTypeId, because some
-                // Windows screen readers are not compatible with
-                // Role::AlertDialog yet.
-                UIA_TextControlTypeId
+                // Documentation suggests the use of UIA_PaneControlTypeId,
+                // but Chromium's implementation uses UIA_WindowControlTypeId
+                // instead.
+                UIA_WindowControlTypeId
             }
             Role::Application => UIA_PaneControlTypeId,
             Role::Article => UIA_GroupControlTypeId,
@@ -117,11 +124,13 @@ impl<'a> NodeWrapper<'a> {
             Role::ContentInfo => UIA_GroupControlTypeId,
             Role::Definition => UIA_GroupControlTypeId,
             Role::DescriptionList => UIA_ListControlTypeId,
-            Role::DescriptionListDetail => UIA_TextControlTypeId,
-            Role::DescriptionListTerm => UIA_ListItemControlTypeId,
             Role::Details => UIA_GroupControlTypeId,
-            Role::Dialog => UIA_PaneControlTypeId,
-            Role::Directory => UIA_ListControlTypeId,
+            Role::Dialog => {
+                // Documentation suggests the use of UIA_PaneControlTypeId,
+                // but Chromium's implementation uses UIA_WindowControlTypeId
+                // instead.
+                UIA_WindowControlTypeId
+            }
             Role::DisclosureTriangle => UIA_ButtonControlTypeId,
             Role::Document | Role::Terminal => UIA_DocumentControlTypeId,
             Role::EmbeddedObject => UIA_PaneControlTypeId,
@@ -130,12 +139,10 @@ impl<'a> NodeWrapper<'a> {
             Role::FigureCaption => UIA_TextControlTypeId,
             Role::Figure => UIA_GroupControlTypeId,
             Role::Footer => UIA_GroupControlTypeId,
-            Role::FooterAsNonLandmark => UIA_GroupControlTypeId,
             Role::Form => UIA_GroupControlTypeId,
             Role::Grid => UIA_DataGridControlTypeId,
             Role::Group => UIA_GroupControlTypeId,
             Role::Header => UIA_GroupControlTypeId,
-            Role::HeaderAsNonLandmark => UIA_GroupControlTypeId,
             Role::Heading => UIA_TextControlTypeId,
             Role::Iframe => UIA_DocumentControlTypeId,
             Role::IframePresentational => UIA_GroupControlTypeId,
@@ -157,8 +164,6 @@ impl<'a> NodeWrapper<'a> {
             Role::Navigation => UIA_GroupControlTypeId,
             Role::Note => UIA_GroupControlTypeId,
             Role::PluginObject => UIA_GroupControlTypeId,
-            Role::Portal => UIA_ButtonControlTypeId,
-            Role::Pre => UIA_GroupControlTypeId,
             Role::ProgressIndicator => UIA_ProgressBarControlTypeId,
             Role::RadioGroup => UIA_GroupControlTypeId,
             Role::Region => UIA_GroupControlTypeId,
@@ -178,6 +183,8 @@ impl<'a> NodeWrapper<'a> {
             Role::ScrollView => UIA_PaneControlTypeId,
             Role::Search => UIA_GroupControlTypeId,
             Role::Section => UIA_GroupControlTypeId,
+            Role::SectionFooter => UIA_GroupControlTypeId,
+            Role::SectionHeader => UIA_GroupControlTypeId,
             Role::Slider => UIA_SliderControlTypeId,
             Role::SpinButton => UIA_SpinnerControlTypeId,
             Role::Splitter => UIA_SeparatorControlTypeId,
@@ -254,19 +261,160 @@ impl<'a> NodeWrapper<'a> {
         }
     }
 
-    fn localized_control_type(&self) -> Option<String> {
+    fn localized_control_type(&self) -> Option<&str> {
         self.0.role_description()
     }
 
-    fn name(&self) -> Option<String> {
-        self.0.name()
+    fn aria_role(&self) -> Option<&str> {
+        match self.0.role() {
+            Role::Alert => Some("alert"),
+            Role::AlertDialog => Some("alertdialog"),
+            Role::Application => Some("application"),
+            Role::Article => Some("article"),
+            Role::Banner | Role::Header => Some("banner"),
+            Role::Button | Role::DefaultButton => Some("button"),
+            Role::Blockquote => Some("blockquote"),
+            Role::Caption | Role::FigureCaption => Some("caption"),
+            Role::Cell => Some("cell"),
+            Role::CheckBox => Some("checkbox"),
+            Role::Code => Some("code"),
+            Role::ColumnHeader => Some("columnheader"),
+            Role::ComboBox | Role::EditableComboBox => Some("combobox"),
+            Role::Comment => Some("comment"),
+            Role::Complementary => Some("complementary"),
+            Role::ContentInfo | Role::Footer => Some("contentinfo"),
+            Role::Definition => Some("definition"),
+            Role::ContentDeletion => Some("deletion"),
+            Role::Dialog => Some("dialog"),
+            Role::Document
+            | Role::Iframe
+            | Role::WebView
+            | Role::RootWebArea
+            | Role::Terminal
+            | Role::PdfRoot => Some("document"),
+            Role::Emphasis => Some("emphasis"),
+            Role::Feed => Some("feed"),
+            Role::Figure => Some("figure"),
+            Role::Form => Some("form"),
+            Role::GenericContainer => Some("generic"),
+            Role::GraphicsDocument => Some("graphics-document"),
+            Role::GraphicsObject => Some("graphics-object"),
+            Role::GraphicsSymbol => Some("graphics-symbol"),
+            Role::Grid | Role::ListGrid => Some("grid"),
+            Role::GridCell => Some("gridcell"),
+            Role::Group
+            | Role::Details
+            | Role::IframePresentational
+            | Role::TitleBar
+            | Role::LayoutTable
+            | Role::LayoutTableCell
+            | Role::LayoutTableRow
+            | Role::Audio
+            | Role::Video
+            | Role::ListMarker
+            | Role::EmbeddedObject
+            | Role::ImeCandidate => Some("group"),
+            Role::Heading => Some("heading"),
+            Role::Image | Role::Canvas => Some("img"),
+            Role::ContentInsertion => Some("insertion"),
+            Role::Link => Some("link"),
+            Role::List | Role::DescriptionList | Role::MenuListPopup => Some("list"),
+            Role::ListBox => Some("listbox"),
+            Role::ListItem => Some("listitem"),
+            Role::Log => Some("log"),
+            Role::Main => Some("main"),
+            Role::Mark => Some("marker"),
+            Role::Marquee => Some("marquee"),
+            Role::Math => Some("math"),
+            Role::Menu => Some("menu"),
+            Role::MenuBar => Some("menubar"),
+            Role::MenuItem => Some("menuitem"),
+            Role::MenuItemCheckBox => Some("menuitemcheckbox"),
+            Role::MenuItemRadio => Some("menuitemradio"),
+            Role::Meter => Some("meter"),
+            Role::Navigation => Some("navigation"),
+            Role::Note => Some("note"),
+            Role::ListBoxOption | Role::MenuListOption => Some("option"),
+            Role::Paragraph => Some("paragraph"),
+            Role::ProgressIndicator => Some("progressbar"),
+            Role::RadioButton => Some("radio"),
+            Role::RadioGroup => Some("radiogroup"),
+            Role::Region
+            | Role::Pane
+            | Role::Window
+            | Role::Keyboard
+            | Role::Unknown
+            | Role::ScrollView
+            | Role::Caret => Some("region"),
+            Role::Row => Some("row"),
+            Role::RowGroup => Some("rowgroup"),
+            Role::RowHeader => Some("rowheader"),
+            Role::ScrollBar => Some("scrollbar"),
+            Role::Search => Some("search"),
+            Role::SearchInput => Some("searchbox"),
+            Role::SectionFooter => Some("sectionfooter"),
+            Role::SectionHeader => Some("sectionheader"),
+            Role::Splitter => Some("separator"),
+            Role::Slider => Some("slider"),
+            Role::SpinButton => Some("spinbutton"),
+            Role::Status => Some("status"),
+            Role::Strong => Some("strong"),
+            // subscript
+            Role::Suggestion => Some("suggestion"),
+            // superscript
+            Role::Switch => Some("switch"),
+            Role::Tab => Some("tab"),
+            Role::Table => Some("table"),
+            Role::TabList => Some("tablist"),
+            Role::TabPanel => Some("tabpanel"),
+            Role::Term => Some("term"),
+            Role::TextInput
+            | Role::MultilineTextInput
+            | Role::DateInput
+            | Role::DateTimeInput
+            | Role::WeekInput
+            | Role::MonthInput
+            | Role::TimeInput
+            | Role::EmailInput
+            | Role::NumberInput
+            | Role::PasswordInput
+            | Role::PhoneNumberInput
+            | Role::UrlInput
+            | Role::ColorWell => Some("textbox"),
+            Role::Time => Some("time"),
+            Role::Timer => Some("timer"),
+            Role::Toolbar => Some("toolbar"),
+            Role::Tooltip => Some("tooltip"),
+            Role::Tree => Some("tree"),
+            Role::TreeGrid => Some("treegrid"),
+            Role::TreeItem => Some("treeitem"),
+            _ => {
+                // TODO: Expose more ARIA roles.
+                None
+            }
+        }
+    }
+
+    pub(crate) fn name(&self) -> Option<WideString> {
+        let mut result = WideString::default();
+        if self.0.label_comes_from_value() {
+            self.0.write_value(&mut result)
+        } else {
+            self.0.write_label(&mut result)
+        }
+        .unwrap()
+        .then_some(result)
     }
 
     fn description(&self) -> Option<String> {
         self.0.description()
     }
 
-    fn placeholder(&self) -> Option<String> {
+    fn culture(&self) -> Option<LocaleName<'_>> {
+        self.0.language().map(LocaleName)
+    }
+
+    fn placeholder(&self) -> Option<&str> {
         self.0.placeholder()
     }
 
@@ -274,12 +422,109 @@ impl<'a> NodeWrapper<'a> {
         filter(self.0) == FilterResult::Include
     }
 
+    fn aria_properties(&self) -> Option<WideString> {
+        let mut result = WideString::default();
+        let mut properties = AriaProperties::new(&mut result);
+
+        // TODO: Atomic, and busy flags should include false when explicitly set to that
+        if self.0.is_live_atomic() {
+            properties.write_bool_property("atomic", true).unwrap();
+        }
+
+        if let Some(label) = self.0.braille_label() {
+            properties.write_property("braillelabel", label).unwrap();
+        }
+
+        if let Some(description) = self.0.braille_role_description() {
+            properties
+                .write_property("brailleroledescription", description)
+                .unwrap();
+        }
+
+        if self.0.is_busy() {
+            properties.write_bool_property("busy", true).unwrap();
+        }
+
+        if let Some(colindextext) = self.0.column_index_text() {
+            properties
+                .write_property("colindextext", colindextext)
+                .unwrap();
+        }
+
+        if let Some(current) = self.0.aria_current() {
+            if current != AriaCurrent::False {
+                properties
+                    .write_property(
+                        "current",
+                        match current {
+                            AriaCurrent::True => "true",
+                            AriaCurrent::Page => "page",
+                            AriaCurrent::Step => "step",
+                            AriaCurrent::Location => "location",
+                            AriaCurrent::Date => "date",
+                            AriaCurrent::Time => "time",
+                            AriaCurrent::False => unreachable!(),
+                        },
+                    )
+                    .unwrap();
+            }
+        }
+
+        if let Some(has_popup) = self.0.has_popup() {
+            properties
+                .write_property(
+                    "haspopup",
+                    match has_popup {
+                        HasPopup::Menu => "menu",
+                        HasPopup::Listbox => "listbox",
+                        HasPopup::Tree => "tree",
+                        HasPopup::Grid => "grid",
+                        HasPopup::Dialog => "dialog",
+                    },
+                )
+                .unwrap();
+        }
+
+        if let Some(level) = self.0.level() {
+            properties.write_usize_property("level", level).unwrap();
+        }
+
+        if self.0.is_multiline() {
+            properties.write_bool_property("multiline", true).unwrap();
+        }
+
+        if let Some(rowindextext) = self.0.row_index_text() {
+            properties
+                .write_property("rowindextext", rowindextext)
+                .unwrap();
+        }
+
+        if let Some(sort_direction) = self.0.sort_direction() {
+            properties
+                .write_property(
+                    "sort",
+                    match sort_direction {
+                        SortDirection::Ascending => "ascending",
+                        SortDirection::Descending => "descending",
+                        SortDirection::Other => "other",
+                    },
+                )
+                .unwrap();
+        }
+
+        if properties.has_properties() {
+            Some(result)
+        } else {
+            None
+        }
+    }
+
     fn is_enabled(&self) -> bool {
         !self.0.is_disabled()
     }
 
     fn is_focusable(&self) -> bool {
-        self.0.is_focusable()
+        self.0.is_focusable(&filter)
     }
 
     fn is_focused(&self) -> bool {
@@ -324,19 +569,29 @@ impl<'a> NodeWrapper<'a> {
     }
 
     fn is_invoke_pattern_supported(&self) -> bool {
-        self.0.is_invocable()
+        self.0.is_invocable(&filter)
     }
 
     fn is_value_pattern_supported(&self) -> bool {
-        self.0.has_value()
+        if self.0.supports_url() {
+            return true;
+        }
+        self.0.has_value() && !self.0.label_comes_from_value()
     }
 
     fn is_range_value_pattern_supported(&self) -> bool {
         self.0.numeric_value().is_some()
     }
 
-    fn value(&self) -> String {
-        self.0.value().unwrap()
+    fn value(&self) -> WideString {
+        if let Some(url) = self.0.supports_url().then(|| self.0.url()).flatten() {
+            let mut result = WideString::default();
+            result.write_str(url).unwrap();
+            return result;
+        }
+        let mut result = WideString::default();
+        self.0.write_value(&mut result).unwrap();
+        result
     }
 
     fn is_read_only(&self) -> bool {
@@ -365,7 +620,15 @@ impl<'a> NodeWrapper<'a> {
             .unwrap_or_else(|| self.numeric_value_step())
     }
 
-    fn is_selection_item_pattern_supported(&self) -> bool {
+    fn is_required(&self) -> bool {
+        self.0.is_required()
+    }
+
+    fn is_scroll_item_pattern_supported(&self) -> bool {
+        self.0.supports_action(Action::ScrollIntoView, &filter)
+    }
+
+    pub(crate) fn is_selection_item_pattern_supported(&self) -> bool {
         match self.0.role() {
             // TODO: tables (#29)
             // https://www.w3.org/TR/core-aam-1.1/#mapping_state-property_table
@@ -381,11 +644,12 @@ impl<'a> NodeWrapper<'a> {
             | Role::MenuListOption
             | Role::Tab
             | Role::TreeItem => self.0.is_selected().is_some(),
+            Role::GridCell => true,
             _ => false,
         }
     }
 
-    fn is_selected(&self) -> bool {
+    pub(crate) fn is_selected(&self) -> bool {
         match self.0.role() {
             // https://www.w3.org/TR/core-aam-1.1/#mapping_state-property_table
             // SelectionItem.IsSelected is set according to the True or False
@@ -398,17 +662,75 @@ impl<'a> NodeWrapper<'a> {
         }
     }
 
+    fn position_in_set(&self) -> Option<i32> {
+        self.0
+            .position_in_set()
+            .and_then(|p| p.try_into().ok())
+            .map(|p: i32| p + 1)
+    }
+
+    fn size_of_set(&self) -> Option<i32> {
+        self.0
+            .size_of_set_from_container(&filter)
+            .and_then(|s| s.try_into().ok())
+    }
+
+    fn level(&self) -> Option<i32> {
+        self.0
+            .level()
+            .and_then(|level| level.checked_add(1))
+            .and_then(|level| level.try_into().ok())
+    }
+
+    fn is_selection_pattern_supported(&self) -> bool {
+        self.0.is_container_with_selectable_children()
+    }
+
+    fn is_multiselectable(&self) -> bool {
+        self.0.is_multiselectable()
+    }
+
     fn is_text_pattern_supported(&self) -> bool {
         self.0.supports_text_ranges()
+    }
+
+    fn is_expand_collapse_pattern_supported(&self) -> bool {
+        self.0.supports_expand_collapse()
+    }
+
+    fn expand_collapse_state(&self) -> ExpandCollapseState {
+        match self.0.data().is_expanded() {
+            Some(true) => ExpandCollapseState_Expanded,
+            Some(false) => ExpandCollapseState_Collapsed,
+            // TODO: Handle the menu button case. (#27)
+            None => ExpandCollapseState_LeafNode,
+        }
+    }
+
+    fn is_password(&self) -> bool {
+        self.0.role() == Role::PasswordInput
+    }
+
+    fn is_dialog(&self) -> bool {
+        self.0.is_dialog()
+    }
+
+    fn is_window_pattern_supported(&self) -> bool {
+        self.0.is_dialog()
+    }
+
+    fn is_modal(&self) -> bool {
+        self.0.is_modal()
     }
 
     pub(crate) fn enqueue_property_changes(
         &self,
         queue: &mut Vec<QueuedEvent>,
+        platform_node: &PlatformNode,
         element: &IRawElementProviderSimple,
         old: &NodeWrapper,
     ) {
-        self.enqueue_simple_property_changes(queue, element, old);
+        self.enqueue_simple_property_changes(queue, platform_node, element, old);
         self.enqueue_pattern_property_changes(queue, element, old);
         self.enqueue_property_implied_events(queue, element, old);
     }
@@ -419,15 +741,6 @@ impl<'a> NodeWrapper<'a> {
         element: &IRawElementProviderSimple,
         old: &NodeWrapper,
     ) {
-        if self.is_selection_item_pattern_supported()
-            && self.is_selected()
-            && !(old.is_selection_item_pattern_supported() && old.is_selected())
-        {
-            queue.push(QueuedEvent::Simple {
-                element: element.clone(),
-                event_id: UIA_SelectionItem_ElementSelectedEventId,
-            });
-        }
         if self.is_text_pattern_supported()
             && old.is_text_pattern_supported()
             && self.0.raw_text_selection() != old.0.raw_text_selection()
@@ -466,8 +779,12 @@ impl<'a> NodeWrapper<'a> {
     IInvokeProvider,
     IValueProvider,
     IRangeValueProvider,
+    IScrollItemProvider,
     ISelectionItemProvider,
-    ITextProvider
+    ISelectionProvider,
+    ITextProvider,
+    IExpandCollapseProvider,
+    IWindowProvider
 )]
 pub(crate) struct PlatformNode {
     pub(crate) context: Weak<Context>,
@@ -497,9 +814,16 @@ impl PlatformNode {
     where
         F: FnOnce(&TreeState, &Context) -> Result<T>,
     {
+        self.with_tree_and_context(|tree, context| f(tree.state(), context))
+    }
+
+    fn with_tree_and_context<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Tree, &Context) -> Result<T>,
+    {
         let context = self.upgrade_context()?;
         let tree = context.read_tree();
-        f(tree.state(), &context)
+        f(&tree, &context)
     }
 
     fn with_tree_state<F, T>(&self, f: F) -> Result<T>
@@ -509,7 +833,8 @@ impl PlatformNode {
         self.with_tree_state_and_context(|state, _| f(state))
     }
 
-    fn node<'a>(&self, state: &'a TreeState) -> Result<Node<'a>> {
+    fn node<'a>(&self, tree: &'a Tree) -> Result<Node<'a>> {
+        let state = tree.state();
         if let Some(id) = self.node_id {
             if let Some(node) = state.node_by_id(id) {
                 Ok(node)
@@ -521,12 +846,21 @@ impl PlatformNode {
         }
     }
 
+    fn node_with_location<'a>(&self, tree: &'a Tree) -> Result<(Node<'a>, LocalNodeId, TreeId)> {
+        let node = self.node(tree)?;
+        let (local_id, tree_id) = tree
+            .state()
+            .locate_node(node.id())
+            .ok_or_else(element_not_available)?;
+        Ok((node, local_id, tree_id))
+    }
+
     fn resolve_with_context<F, T>(&self, f: F) -> Result<T>
     where
         for<'a> F: FnOnce(Node<'a>, &Context) -> Result<T>,
     {
-        self.with_tree_state_and_context(|state, context| {
-            let node = self.node(state)?;
+        self.with_tree_and_context(|tree, context| {
+            let node = self.node(tree)?;
             f(node, context)
         })
     }
@@ -535,9 +869,9 @@ impl PlatformNode {
     where
         for<'a> F: FnOnce(Node<'a>, &TreeState, &Context) -> Result<T>,
     {
-        self.with_tree_state_and_context(|state, context| {
-            let node = self.node(state)?;
-            f(node, state, context)
+        self.with_tree_and_context(|tree, context| {
+            let node = self.node(tree)?;
+            f(node, tree.state(), context)
         })
     }
 
@@ -552,8 +886,8 @@ impl PlatformNode {
     where
         for<'a> F: FnOnce(Node<'a>, &Context) -> Result<T>,
     {
-        self.with_tree_state_and_context(|state, context| {
-            let node = self.node(state)?;
+        self.with_tree_and_context(|tree, context| {
+            let node = self.node(tree)?;
             if node.supports_text_ranges() {
                 f(node, context)
             } else {
@@ -569,36 +903,85 @@ impl PlatformNode {
         self.resolve_with_context_for_text_pattern(|node, _| f(node))
     }
 
+    fn do_complex_action<F>(&self, f: F) -> Result<()>
+    where
+        for<'a> F: FnOnce(Node<'a>, LocalNodeId, TreeId) -> Result<Option<ActionRequest>>,
+    {
+        let context = self.upgrade_context()?;
+        if context.is_placeholder.load(Ordering::SeqCst) {
+            return Err(element_not_enabled());
+        }
+        let tree = context.read_tree();
+        let (node, target_node, target_tree) = self.node_with_location(&tree)?;
+        if let Some(request) = f(node, target_node, target_tree)? {
+            drop(tree);
+            context.do_action(request);
+        }
+        Ok(())
+    }
+
     fn do_action<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce() -> (Action, Option<ActionData>),
     {
-        let context = self.upgrade_context()?;
-        if context.is_placeholder.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        let tree = context.read_tree();
-        let node_id = if let Some(id) = self.node_id {
-            if !tree.state().has_node(id) {
-                return Err(element_not_available());
+        self.do_complex_action(|node, target_node, target_tree| {
+            if node.is_disabled() {
+                return Err(element_not_enabled());
             }
-            id
-        } else {
-            tree.state().root_id()
-        };
-        drop(tree);
-        let (action, data) = f();
-        let request = ActionRequest {
-            target: node_id,
-            action,
-            data,
-        };
-        context.do_action(request);
-        Ok(())
+            let (action, data) = f();
+            Ok(Some(ActionRequest {
+                action,
+                target_tree,
+                target_node,
+                data,
+            }))
+        })
     }
 
-    fn do_default_action(&self) -> Result<()> {
-        self.do_action(|| (Action::Default, None))
+    fn click(&self) -> Result<()> {
+        self.do_action(|| (Action::Click, None))
+    }
+
+    fn set_expanded(&self, expanded: bool) -> Result<()> {
+        self.do_complex_action(|node, target_node, target_tree| {
+            if node.is_disabled() {
+                return Err(element_not_enabled());
+            }
+            let Some(current) = node.data().is_expanded() else {
+                return Err(invalid_operation());
+            };
+            if current == expanded {
+                return Err(invalid_operation());
+            }
+            Ok(Some(ActionRequest {
+                action: if expanded {
+                    Action::Expand
+                } else {
+                    Action::Collapse
+                },
+                target_tree,
+                target_node,
+                data: None,
+            }))
+        })
+    }
+
+    fn set_selected(&self, selected: bool) -> Result<()> {
+        self.do_complex_action(|node, target_node, target_tree| {
+            if node.is_disabled() {
+                return Err(element_not_enabled());
+            }
+            let wrapper = NodeWrapper(&node);
+            if selected == wrapper.is_selected() {
+                return Ok(None);
+            }
+            Ok(Some(ActionRequest {
+                action: Action::Click,
+                target_tree,
+                target_node,
+                data: None,
+            }))
+        })
     }
 
     fn relative(&self, node_id: NodeId) -> Self {
@@ -609,12 +992,12 @@ impl PlatformNode {
     }
 
     fn is_root(&self, state: &TreeState) -> bool {
-        self.node_id.map_or(false, |id| id == state.root_id())
+        self.node_id.is_some_and(|id| id == state.root_id())
     }
 }
 
 #[allow(non_snake_case)]
-impl IRawElementProviderSimple_Impl for PlatformNode {
+impl IRawElementProviderSimple_Impl for PlatformNode_Impl {
     fn ProviderOptions(&self) -> Result<ProviderOptions> {
         Ok(ProviderOptions_ServerSideProvider)
     }
@@ -634,15 +1017,23 @@ impl IRawElementProviderSimple_Impl for PlatformNode {
                             result = window_title(context.hwnd).into();
                         }
                         UIA_NativeWindowHandlePropertyId => {
-                            result = (context.hwnd.0 as i32).into();
+                            result = (context.hwnd.0 .0 as i32).into();
                         }
                         _ => (),
                     }
                 }
                 match property_id {
                     UIA_FrameworkIdPropertyId => result = state.toolkit_name().into(),
-                    UIA_ProviderDescriptionPropertyId => {
-                        result = app_and_toolkit_description(state).into()
+                    UIA_ProviderDescriptionPropertyId => result = toolkit_description(state).into(),
+                    UIA_ControllerForPropertyId => {
+                        let controlled: Vec<IUnknown> = node
+                            .controls()
+                            .filter(|controlled| filter(controlled) == FilterResult::Include)
+                            .map(|controlled| self.relative(controlled.id()))
+                            .map(IRawElementProviderSimple::from)
+                            .filter_map(|controlled| controlled.cast::<IUnknown>().ok())
+                            .collect();
+                        result = controlled.into();
                     }
                     _ => (),
                 }
@@ -654,7 +1045,7 @@ impl IRawElementProviderSimple_Impl for PlatformNode {
     fn HostRawElementProvider(&self) -> Result<IRawElementProviderSimple> {
         self.with_tree_state_and_context(|state, context| {
             if self.is_root(state) {
-                unsafe { UiaHostProviderFromHwnd(context.hwnd) }
+                unsafe { UiaHostProviderFromHwnd(context.hwnd.0) }
             } else {
                 Err(Error::empty())
             }
@@ -663,7 +1054,7 @@ impl IRawElementProviderSimple_Impl for PlatformNode {
 }
 
 #[allow(non_snake_case)]
-impl IRawElementProviderFragment_Impl for PlatformNode {
+impl IRawElementProviderFragment_Impl for PlatformNode_Impl {
     fn Navigate(&self, direction: NavigateDirection) -> Result<IRawElementProviderFragment> {
         self.resolve(|node| {
             let result = match direction {
@@ -724,8 +1115,7 @@ impl IRawElementProviderFragment_Impl for PlatformNode {
     fn FragmentRoot(&self) -> Result<IRawElementProviderFragmentRoot> {
         self.with_tree_state(|state| {
             if self.is_root(state) {
-                // SAFETY: We know &self is inside a full COM implementation.
-                unsafe { self.cast() }
+                Ok(self.to_interface())
             } else {
                 let root_id = state.root_id();
                 Ok(self.relative(root_id).into())
@@ -735,7 +1125,7 @@ impl IRawElementProviderFragment_Impl for PlatformNode {
 }
 
 #[allow(non_snake_case)]
-impl IRawElementProviderFragmentRoot_Impl for PlatformNode {
+impl IRawElementProviderFragmentRoot_Impl for PlatformNode_Impl {
     fn ElementProviderFromPoint(&self, x: f64, y: f64) -> Result<IRawElementProviderFragment> {
         self.resolve_with_context(|node, context| {
             let client_top_left = context.client_top_left();
@@ -750,14 +1140,14 @@ impl IRawElementProviderFragmentRoot_Impl for PlatformNode {
 
     fn GetFocus(&self) -> Result<IRawElementProviderFragment> {
         self.with_tree_state(|state| {
-            if let Some(id) = state.focus_id() {
+            if let Some(node) = state.focus() {
                 let self_id = if let Some(id) = self.node_id {
                     id
                 } else {
                     state.root_id()
                 };
-                if id != self_id {
-                    return Ok(self.relative(id).into());
+                if node.id() != self_id {
+                    return Ok(self.relative(node.id()).into());
                 }
             }
             Err(Error::empty())
@@ -766,11 +1156,11 @@ impl IRawElementProviderFragmentRoot_Impl for PlatformNode {
 }
 
 macro_rules! properties {
-    ($(($base_id:ident, $m:ident)),+) => {
+    ($(($id:ident, $m:ident)),+) => {
         impl NodeWrapper<'_> {
             fn get_property_value(&self, property_id: UIA_PROPERTY_ID) -> Variant {
                 match property_id {
-                    $(paste! { [< UIA_ $base_id PropertyId>] } => {
+                    $($id => {
                         self.$m().into()
                     })*
                     _ => Variant::empty()
@@ -779,6 +1169,7 @@ macro_rules! properties {
             fn enqueue_simple_property_changes(
                 &self,
                 queue: &mut Vec<QueuedEvent>,
+                platform_node: &PlatformNode,
                 element: &IRawElementProviderSimple,
                 old: &NodeWrapper,
             ) {
@@ -789,33 +1180,57 @@ macro_rules! properties {
                         self.enqueue_property_change(
                             queue,
                             element,
-                            paste! { [<UIA_ $base_id PropertyId>] },
+                            $id,
                             old_value.into(),
                             new_value.into(),
                         );
                     }
                 })*
+
+                let mut old_controls = old.0.controls().filter(|controlled| filter(controlled) == FilterResult::Include);
+                let mut new_controls = self.0.controls().filter(|controlled| filter(controlled) == FilterResult::Include);
+                let mut are_equal = true;
+                let mut controls: Vec<IUnknown> = Vec::new();
+                loop {
+                    let old_controlled = old_controls.next();
+                    let new_controlled = new_controls.next();
+                    match (old_controlled, new_controlled) {
+                        (Some(a), Some(b)) => {
+                            are_equal = are_equal && a.id() == b.id();
+                            controls.push(platform_node.relative(b.id()).into());
+                        }
+                        (None, None) => break,
+                        _ => are_equal = false,
+                    }
+                }
+                if !are_equal {
+                    self.enqueue_property_change(
+                        queue,
+                        &element,
+                        UIA_ControllerForPropertyId,
+                        Variant::empty(),
+                        controls.into(),
+                    );
+                }
             }
         }
     };
 }
 
 macro_rules! patterns {
-    ($(($base_pattern_id:ident, $is_supported:ident, (
-        $(($base_property_id:ident, $getter:ident, $com_type:ident)),*
+    ($(($pattern_id:ident, $provider_interface:ident, $provider_interface_impl:ident, $is_supported:ident, (
+        $(($property_id:ident, $com_getter:ident, $getter:ident, $com_type:ident)),*
     ), (
         $($extra_trait_method:item),*
     ))),+) => {
-        impl PlatformNode {
+        impl PlatformNode_Impl {
             fn pattern_provider(&self, pattern_id: UIA_PATTERN_ID) -> Result<IUnknown> {
                 self.resolve(|node| {
                     let wrapper = NodeWrapper(&node);
                     match pattern_id {
-                        $(paste! { [< UIA_ $base_pattern_id PatternId>] } => {
+                        $($pattern_id => {
                             if wrapper.$is_supported() {
-                                // SAFETY: We know we're running inside a full COM implementation.
-                                let intermediate: paste! { [< I $base_pattern_id Provider>] } =
-                                    unsafe { self.cast() }?;
+                                let intermediate: $provider_interface = self.to_interface();
                                 return intermediate.cast();
                             }
                         })*
@@ -840,7 +1255,7 @@ macro_rules! patterns {
                             self.enqueue_property_change(
                                 queue,
                                 element,
-                                paste! { [<UIA_ $base_pattern_id $base_property_id PropertyId>] },
+                                $property_id,
                                 old_value.into(),
                                 new_value.into(),
                             );
@@ -849,54 +1264,61 @@ macro_rules! patterns {
                 })*
             }
         }
-        paste! {
-            $(#[allow(non_snake_case)]
-            impl [< I $base_pattern_id Provider_Impl>] for PlatformNode {
-                $(fn $base_property_id(&self) -> Result<$com_type> {
-                    self.resolve(|node| {
-                        let wrapper = NodeWrapper(&node);
-                        Ok(wrapper.$getter().into())
-                    })
-                })*
-                $($extra_trait_method)*
+        $(#[allow(non_snake_case)]
+        impl $provider_interface_impl for PlatformNode_Impl {
+            $(fn $com_getter(&self) -> Result<$com_type> {
+                self.resolve(|node| {
+                    let wrapper = NodeWrapper(&node);
+                    Ok(wrapper.$getter().into())
+                })
             })*
-        }
+            $($extra_trait_method)*
+        })*
     };
 }
 
 properties! {
-    (ControlType, control_type),
-    (LocalizedControlType, localized_control_type),
-    (Name, name),
-    (FullDescription, description),
-    (HelpText, placeholder),
-    (IsContentElement, is_content_element),
-    (IsControlElement, is_content_element),
-    (IsEnabled, is_enabled),
-    (IsKeyboardFocusable, is_focusable),
-    (HasKeyboardFocus, is_focused),
-    (LiveSetting, live_setting),
-    (AutomationId, automation_id),
-    (ClassName, class_name),
-    (Orientation, orientation)
+    (UIA_ControlTypePropertyId, control_type),
+    (UIA_LocalizedControlTypePropertyId, localized_control_type),
+    (UIA_AriaRolePropertyId, aria_role),
+    (UIA_NamePropertyId, name),
+    (UIA_FullDescriptionPropertyId, description),
+    (UIA_CulturePropertyId, culture),
+    (UIA_HelpTextPropertyId, placeholder),
+    (UIA_IsContentElementPropertyId, is_content_element),
+    (UIA_IsControlElementPropertyId, is_content_element),
+    (UIA_IsEnabledPropertyId, is_enabled),
+    (UIA_IsKeyboardFocusablePropertyId, is_focusable),
+    (UIA_HasKeyboardFocusPropertyId, is_focused),
+    (UIA_LiveSettingPropertyId, live_setting),
+    (UIA_AutomationIdPropertyId, automation_id),
+    (UIA_ClassNamePropertyId, class_name),
+    (UIA_OrientationPropertyId, orientation),
+    (UIA_IsRequiredForFormPropertyId, is_required),
+    (UIA_IsPasswordPropertyId, is_password),
+    (UIA_LevelPropertyId, level),
+    (UIA_PositionInSetPropertyId, position_in_set),
+    (UIA_SizeOfSetPropertyId, size_of_set),
+    (UIA_AriaPropertiesPropertyId, aria_properties),
+    (UIA_IsDialogPropertyId, is_dialog)
 }
 
 patterns! {
-    (Toggle, is_toggle_pattern_supported, (
-        (ToggleState, toggle_state, ToggleState)
+    (UIA_TogglePatternId, IToggleProvider, IToggleProvider_Impl, is_toggle_pattern_supported, (
+        (UIA_ToggleToggleStatePropertyId, ToggleState, toggle_state, ToggleState)
     ), (
         fn Toggle(&self) -> Result<()> {
-            self.do_default_action()
+            self.click()
         }
     )),
-    (Invoke, is_invoke_pattern_supported, (), (
+    (UIA_InvokePatternId, IInvokeProvider, IInvokeProvider_Impl, is_invoke_pattern_supported, (), (
         fn Invoke(&self) -> Result<()> {
-            self.do_default_action()
+            self.click()
         }
     )),
-    (Value, is_value_pattern_supported, (
-        (Value, value, BSTR),
-        (IsReadOnly, is_read_only, BOOL)
+    (UIA_ValuePatternId, IValueProvider, IValueProvider_Impl, is_value_pattern_supported, (
+        (UIA_ValueValuePropertyId, Value, value, BSTR),
+        (UIA_ValueIsReadOnlyPropertyId, IsReadOnly, is_read_only, BOOL)
     ), (
         fn SetValue(&self, value: &PCWSTR) -> Result<()> {
             self.do_action(|| {
@@ -905,13 +1327,13 @@ patterns! {
             })
         }
     )),
-    (RangeValue, is_range_value_pattern_supported, (
-        (Value, numeric_value, f64),
-        (IsReadOnly, is_read_only, BOOL),
-        (Minimum, min_numeric_value, f64),
-        (Maximum, max_numeric_value, f64),
-        (SmallChange, numeric_value_step, f64),
-        (LargeChange, numeric_value_jump, f64)
+    (UIA_RangeValuePatternId, IRangeValueProvider, IRangeValueProvider_Impl, is_range_value_pattern_supported, (
+        (UIA_RangeValueValuePropertyId, Value, numeric_value, f64),
+        (UIA_RangeValueIsReadOnlyPropertyId, IsReadOnly, is_read_only, BOOL),
+        (UIA_RangeValueMinimumPropertyId, Minimum, min_numeric_value, f64),
+        (UIA_RangeValueMaximumPropertyId, Maximum, max_numeric_value, f64),
+        (UIA_RangeValueSmallChangePropertyId, SmallChange, numeric_value_step, f64),
+        (UIA_RangeValueLargeChangePropertyId, LargeChange, numeric_value_jump, f64)
     ), (
         fn SetValue(&self, value: f64) -> Result<()> {
             self.do_action(|| {
@@ -919,31 +1341,66 @@ patterns! {
             })
         }
     )),
-    (SelectionItem, is_selection_item_pattern_supported, (
-        (IsSelected, is_selected, BOOL)
-    ), (
+    (UIA_ScrollItemPatternId, IScrollItemProvider, IScrollItemProvider_Impl, is_scroll_item_pattern_supported, (), (
+        fn ScrollIntoView(&self) -> Result<()> {
+            self.do_complex_action(|_node, target_node, target_tree| {
+                Ok(Some(ActionRequest {
+                    action: Action::ScrollIntoView,
+                    target_tree,
+                    target_node,
+                    data: None,
+                }))
+            })
+        }
+    )),
+    (UIA_SelectionItemPatternId, ISelectionItemProvider, ISelectionItemProvider_Impl, is_selection_item_pattern_supported, (), (
+        fn IsSelected(&self) -> Result<BOOL> {
+            self.resolve(|node| {
+                let wrapper = NodeWrapper(&node);
+                Ok(wrapper.is_selected().into())
+            })
+        },
+
         fn Select(&self) -> Result<()> {
-            self.do_default_action()
+            self.set_selected(true)
         },
 
         fn AddToSelection(&self) -> Result<()> {
-            // TODO: implement when we work on list boxes (#23)
-            Err(not_implemented())
+            self.set_selected(true)
         },
 
         fn RemoveFromSelection(&self) -> Result<()> {
-            // TODO: implement when we work on list boxes (#23)
-            Err(not_implemented())
+            self.set_selected(false)
         },
 
         fn SelectionContainer(&self) -> Result<IRawElementProviderSimple> {
-            // TODO: implement when we work on list boxes (#23)
-            // We return E_FAIL here because that's what Chromium does
-            // if it can't find a container.
-            Err(E_FAIL.into())
+            self.resolve(|node| {
+                if let Some(container) = node.selection_container(&filter) {
+                    Ok(self.relative(container.id()).into())
+                } else {
+                    Err(E_FAIL.into())
+                }
+            })
         }
     )),
-    (Text, is_text_pattern_supported, (), (
+    (UIA_SelectionPatternId, ISelectionProvider, ISelectionProvider_Impl, is_selection_pattern_supported, (
+        (UIA_SelectionCanSelectMultiplePropertyId, CanSelectMultiple, is_multiselectable, BOOL),
+        (UIA_SelectionIsSelectionRequiredPropertyId, IsSelectionRequired, is_required, BOOL)
+    ), (
+        fn GetSelection(&self) -> Result<*mut SAFEARRAY> {
+            self.resolve(|node| {
+                let selection: Vec<_> = node
+                    .items(&filter)
+                    .filter(|item| item.is_selected() == Some(true))
+                    .map(|item| self.relative(item.id()))
+                    .map(IRawElementProviderSimple::from)
+                    .filter_map(|item| item.cast::<IUnknown>().ok())
+                    .collect();
+                Ok(safe_array_from_com_slice(&selection))
+            })
+        }
+    )),
+    (UIA_TextPatternId, ITextProvider, ITextProvider_Impl, is_text_pattern_supported, (), (
         fn GetSelection(&self) -> Result<*mut SAFEARRAY> {
             self.resolve_for_text_pattern(|node| {
                 if let Some(range) = node.text_selection() {
@@ -963,7 +1420,7 @@ patterns! {
             Ok(std::ptr::null_mut())
         },
 
-        fn RangeFromChild(&self, _child: Option<&IRawElementProviderSimple>) -> Result<ITextRangeProvider> {
+        fn RangeFromChild(&self, _child: Ref<IRawElementProviderSimple>) -> Result<ITextRangeProvider> {
             // We don't support embedded objects in text.
             Err(not_implemented())
         },
@@ -994,6 +1451,52 @@ patterns! {
                     Ok(SupportedTextSelection_None)
                 }
             })
+        }
+    )),
+    (UIA_ExpandCollapsePatternId, IExpandCollapseProvider, IExpandCollapseProvider_Impl, is_expand_collapse_pattern_supported, (
+        (UIA_ExpandCollapseExpandCollapseStatePropertyId, ExpandCollapseState, expand_collapse_state, ExpandCollapseState)
+    ), (
+        fn Expand(&self) -> Result<()> {
+            self.set_expanded(true)
+        },
+
+        fn Collapse(&self) -> Result<()> {
+            self.set_expanded(false)
+        }
+    )),
+    (UIA_WindowPatternId, IWindowProvider, IWindowProvider_Impl, is_window_pattern_supported, (
+        (UIA_WindowIsModalPropertyId, IsModal, is_modal, BOOL)
+    ), (
+        fn SetVisualState(&self, _: WindowVisualState) -> Result<()> {
+            Err(invalid_operation())
+        },
+
+        fn Close(&self) -> Result<()> {
+            Err(not_supported())
+        },
+
+        fn WaitForInputIdle(&self, _: i32) -> Result<BOOL> {
+            Err(not_supported())
+        },
+
+        fn CanMaximize(&self) -> Result<BOOL> {
+            Err(not_supported())
+        },
+
+        fn CanMinimize(&self) -> Result<BOOL> {
+            Err(not_supported())
+        },
+
+        fn WindowVisualState(&self) -> Result<WindowVisualState> {
+            Err(not_supported())
+        },
+
+        fn WindowInteractionState(&self) -> Result<WindowInteractionState> {
+            Ok(WindowInteractionState_ReadyForUserInteraction)
+        },
+
+        fn IsTopmost(&self) -> Result<BOOL> {
+            Err(not_supported())
         }
     ))
 }

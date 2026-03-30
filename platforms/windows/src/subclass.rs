@@ -17,7 +17,7 @@ use windows::{
 use crate::{Adapter, QueuedEvents};
 
 fn win32_error() -> ! {
-    panic!("{}", Error::from_win32())
+    panic!("{}", Error::from_thread())
 }
 
 // Work around a difference between the SetWindowLongPtrW API definition
@@ -93,11 +93,17 @@ impl SubclassImpl {
     }
 
     fn install(&mut self) {
+        if !unsafe { GetPropW(self.hwnd, PROP_NAME) }.0.is_null() {
+            panic!(
+                "subclassing adapter already instantiated on window {:?}",
+                self.hwnd.0
+            );
+        }
         unsafe {
             SetPropW(
                 self.hwnd,
                 PROP_NAME,
-                HANDLE(self as *const SubclassImpl as _),
+                Some(HANDLE(self as *const SubclassImpl as _)),
             )
         }
         .unwrap();
@@ -149,11 +155,19 @@ impl SubclassingAdapter {
     /// This must be called on the thread that owns the window. The activation
     /// handler will always be called on that thread. The action handler
     /// may or may not be called on that thread.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the window is already visible.
     pub fn new(
         hwnd: HWND,
         activation_handler: impl 'static + ActivationHandler,
         action_handler: impl 'static + ActionHandler + Send,
     ) -> Self {
+        if unsafe { IsWindowVisible(hwnd) }.into() {
+            panic!("The AccessKit Windows subclassing adapter must be created before the window is shown (made visible) for the first time.");
+        }
+
         let mut r#impl = SubclassImpl::new(hwnd, activation_handler, action_handler);
         r#impl.install();
         Self(r#impl)

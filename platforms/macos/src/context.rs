@@ -3,14 +3,15 @@
 // the LICENSE-APACHE file) or the MIT license (found in
 // the LICENSE-MIT file), at your option.
 
-use accesskit::{ActionHandler, ActionRequest, NodeId};
-use accesskit_consumer::Tree;
+use crate::node::PlatformNode;
+use accesskit::{ActionHandler, ActionRequest};
+use accesskit_consumer::{NodeId, Tree};
+use hashbrown::HashMap;
 use objc2::rc::{Id, WeakId};
 use objc2_app_kit::*;
 use objc2_foundation::MainThreadMarker;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
-
-use crate::node::PlatformNode;
+use std::fmt::Debug;
+use std::{cell::RefCell, rc::Rc};
 
 pub(crate) trait ActionHandlerNoMut {
     fn do_action(&self, request: ActionRequest);
@@ -36,6 +37,18 @@ pub(crate) struct Context {
     pub(crate) action_handler: Rc<dyn ActionHandlerNoMut>,
     platform_nodes: RefCell<HashMap<NodeId, Id<PlatformNode>>>,
     pub(crate) mtm: MainThreadMarker,
+}
+
+impl Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("view", &self.view)
+            .field("tree", &self.tree)
+            .field("action_handler", &"ActionHandler")
+            .field("platform_nodes", &self.platform_nodes)
+            .field("mtm", &self.mtm)
+            .finish()
+    }
 }
 
 impl Context {

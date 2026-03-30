@@ -3,14 +3,15 @@
 // the LICENSE-APACHE file) or the MIT license (found in
 // the LICENSE-MIT file), at your option.
 
-use accesskit::{ActionHandler, ActivationHandler, DeactivationHandler, NodeId, Rect, TreeUpdate};
+use accesskit::{ActionHandler, ActivationHandler, DeactivationHandler, Rect, TreeUpdate};
 use accesskit_atspi_common::{
     next_adapter_id, ActionHandlerNoMut, ActionHandlerWrapper, Adapter as AdapterImpl,
-    AdapterCallback, Event, PlatformNode, WindowBounds,
+    AdapterCallback, Event, NodeId, PlatformNode, WindowBounds,
 };
 #[cfg(not(feature = "tokio"))]
 use async_channel::Sender;
 use atspi::InterfaceSet;
+use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex};
 #[cfg(feature = "tokio")]
 use tokio::sync::mpsc::UnboundedSender as Sender;
@@ -71,6 +72,35 @@ pub(crate) enum AdapterState {
     Active(AdapterImpl),
 }
 
+impl Debug for AdapterState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdapterState::Inactive {
+                is_window_focused,
+                root_window_bounds,
+                action_handler: _,
+            } => f
+                .debug_struct("Inactive")
+                .field("is_window_focused", is_window_focused)
+                .field("root_window_bounds", root_window_bounds)
+                .field("action_handler", &"ActionHandler")
+                .finish(),
+            AdapterState::Pending {
+                is_window_focused,
+                root_window_bounds,
+                action_handler: _,
+            } => f
+                .debug_struct("Pending")
+                .field("is_window_focused", is_window_focused)
+                .field("root_window_bounds", root_window_bounds)
+                .field("action_handler", &"ActionHandler")
+                .finish(),
+            AdapterState::Active(r#impl) => f.debug_tuple("Active").field(r#impl).finish(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Adapter {
     messages: Sender<Message>,
     id: usize,
@@ -114,6 +144,13 @@ impl Adapter {
         let _ = self.messages.send(message);
     }
 
+    /// Set the bounds of the top-level window. The outer bounds contain any
+    /// window decoration and borders.
+    ///
+    /// # Caveats
+    ///
+    /// Since an application can not get the position of its window under
+    /// Wayland, calling this method only makes sense under X11.
     pub fn set_root_window_bounds(&mut self, outer: Rect, inner: Rect) {
         let new_bounds = WindowBounds::new(outer, inner);
         let mut state = self.state.lock().unwrap();

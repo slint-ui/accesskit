@@ -8,21 +8,20 @@ use crate::{
     context::get_or_init_app_context,
     executor::{Executor, Task},
 };
-use accesskit::NodeId;
 use accesskit_atspi_common::{
-    NodeIdOrRoot, ObjectEvent, PlatformNode, PlatformRoot, Property, WindowEvent,
+    NodeId, NodeIdOrRoot, ObjectEvent, PlatformNode, PlatformRoot, Property, WindowEvent,
 };
 use atspi::{
-    events::EventBody,
+    events::EventBodyBorrowed,
     proxy::{bus::BusProxy, socket::SocketProxy},
     Interface, InterfaceSet,
 };
-use serde::Serialize;
-use std::{collections::HashMap, env::var, io};
+use std::{env::var, io};
 use zbus::{
+    connection::Builder,
     names::{BusName, InterfaceName, MemberName, OwnedUniqueName},
     zvariant::{Str, Value},
-    Address, Connection, ConnectionBuilder, Result,
+    Address, Connection, Result,
 };
 
 pub(crate) struct Bus {
@@ -41,7 +40,7 @@ impl Bus {
             _ => BusProxy::new(session_bus).await?.get_address().await?,
         };
         let address: Address = address.as_str().try_into()?;
-        let conn = ConnectionBuilder::address(address)?
+        let conn = Builder::address(address)?
             .internal_executor(false)
             .build()
             .await?;
@@ -78,8 +77,7 @@ impl Bus {
             .at(path.clone(), ApplicationInterface(node.clone()))
             .await?
         {
-            let desktop = self
-                .socket_proxy
+            self.socket_proxy
                 .embed(&(self.unique_name().as_str(), ObjectId::Root.path().into()))
                 .await?;
 
@@ -87,11 +85,7 @@ impl Bus {
                 .object_server()
                 .at(
                     path,
-                    RootAccessibleInterface::new(
-                        self.unique_name().to_owned(),
-                        desktop.into(),
-                        node,
-                    ),
+                    RootAccessibleInterface::new(self.unique_name().to_owned(), node),
                 )
                 .await?;
         }
@@ -124,6 +118,20 @@ impl Bus {
             )
             .await?;
         }
+        if new_interfaces.contains(Interface::Hyperlink) {
+            self.register_interface(
+                &path,
+                HyperlinkInterface::new(bus_name.clone(), node.clone()),
+            )
+            .await?;
+        }
+        if new_interfaces.contains(Interface::Selection) {
+            self.register_interface(
+                &path,
+                SelectionInterface::new(bus_name.clone(), node.clone()),
+            )
+            .await?;
+        }
         if new_interfaces.contains(Interface::Text) {
             self.register_interface(&path, TextInterface::new(node.clone()))
                 .await?;
@@ -138,7 +146,7 @@ impl Bus {
 
     async fn register_interface<T>(&self, path: &str, interface: T) -> Result<bool>
     where
-        T: zbus::Interface,
+        T: zbus::object_server::Interface,
     {
         map_or_ignoring_broken_pipe(
             self.conn.object_server().at(path, interface).await,
@@ -169,6 +177,14 @@ impl Bus {
             self.unregister_interface::<ComponentInterface>(&path)
                 .await?;
         }
+        if old_interfaces.contains(Interface::Hyperlink) {
+            self.unregister_interface::<HyperlinkInterface>(&path)
+                .await?;
+        }
+        if old_interfaces.contains(Interface::Selection) {
+            self.unregister_interface::<SelectionInterface>(&path)
+                .await?;
+        }
         if old_interfaces.contains(Interface::Text) {
             self.unregister_interface::<TextInterface>(&path).await?;
         }
@@ -181,7 +197,7 @@ impl Bus {
 
     async fn unregister_interface<T>(&self, path: &str) -> Result<bool>
     where
-        T: zbus::Interface,
+        T: zbus::object_server::Interface,
     {
         map_or_ignoring_broken_pipe(
             self.conn.object_server().remove::<T, _>(path).await,
@@ -211,217 +227,123 @@ impl Bus {
             ObjectEvent::CaretMoved(_) => "TextCaretMoved",
             ObjectEvent::ChildAdded(_, _) | ObjectEvent::ChildRemoved(_) => "ChildrenChanged",
             ObjectEvent::PropertyChanged(_) => "PropertyChange",
+            ObjectEvent::SelectionChanged => "SelectionChanged",
             ObjectEvent::StateChanged(_, _) => "StateChanged",
             ObjectEvent::TextInserted { .. } | ObjectEvent::TextRemoved { .. } => "TextChanged",
             ObjectEvent::TextSelectionChanged => "TextSelectionChanged",
         };
-        let properties = HashMap::new();
         match event {
             ObjectEvent::ActiveDescendantChanged(child) => {
                 let child = ObjectId::Node {
                     adapter: adapter_id,
                     node: child,
                 };
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: "",
-                        detail1: 0,
-                        detail2: 0,
-                        any_data: child.to_address(self.unique_name().clone()).into(),
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.any_data = child.to_address(self.unique_name().inner()).into();
+                self.emit_event(target, interface, signal, body).await
             }
             ObjectEvent::Announcement(message, politeness) => {
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: "",
-                        detail1: politeness as i32,
-                        detail2: 0,
-                        any_data: message.into(),
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.detail1 = politeness as i32;
+                body.any_data = message.into();
+                self.emit_event(target, interface, signal, body).await
             }
             ObjectEvent::BoundsChanged(bounds) => {
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: "",
-                        detail1: 0,
-                        detail2: 0,
-                        any_data: Value::from(bounds),
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.any_data = Value::from(bounds);
+                self.emit_event(target, interface, signal, body).await
             }
             ObjectEvent::CaretMoved(offset) => {
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: "",
-                        detail1: offset,
-                        detail2: 0,
-                        any_data: "".into(),
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.detail1 = offset;
+                self.emit_event(target, interface, signal, body).await
             }
             ObjectEvent::ChildAdded(index, child) => {
                 let child = ObjectId::Node {
                     adapter: adapter_id,
                     node: child,
                 };
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: "add",
-                        detail1: index as i32,
-                        detail2: 0,
-                        any_data: child.to_address(self.unique_name().clone()).into(),
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.kind = "add";
+                body.detail1 = index as i32;
+                body.any_data = child.to_address(self.unique_name().inner()).into();
+                self.emit_event(target, interface, signal, body).await
             }
             ObjectEvent::ChildRemoved(child) => {
                 let child = ObjectId::Node {
                     adapter: adapter_id,
                     node: child,
                 };
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: "remove",
-                        detail1: -1,
-                        detail2: 0,
-                        any_data: child.to_address(self.unique_name().clone()).into(),
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.kind = "remove";
+                body.detail1 = -1;
+                body.any_data = child.to_address(self.unique_name().inner()).into();
+                self.emit_event(target, interface, signal, body).await
             }
             ObjectEvent::PropertyChanged(property) => {
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: match property {
-                            Property::Name(_) => "accessible-name",
-                            Property::Description(_) => "accessible-description",
-                            Property::Parent(_) => "accessible-parent",
-                            Property::Role(_) => "accessible-role",
-                            Property::Value(_) => "accessible-value",
-                        },
-                        detail1: 0,
-                        detail2: 0,
-                        any_data: match property {
-                            Property::Name(value) => Str::from(value).into(),
-                            Property::Description(value) => Str::from(value).into(),
-                            Property::Parent(parent) => {
-                                let parent = match parent {
-                                    NodeIdOrRoot::Node(node) => ObjectId::Node {
-                                        adapter: adapter_id,
-                                        node,
-                                    },
-                                    NodeIdOrRoot::Root => ObjectId::Root,
-                                };
-                                parent.to_address(self.unique_name().clone()).into()
-                            }
-                            Property::Role(value) => Value::U32(value as u32),
-                            Property::Value(value) => Value::F64(value),
-                        },
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.kind = match property {
+                    Property::Name(_) => "accessible-name",
+                    Property::Description(_) => "accessible-description",
+                    Property::Parent(_) => "accessible-parent",
+                    Property::Role(_) => "accessible-role",
+                    Property::Value(_) => "accessible-value",
+                };
+                body.any_data = match property {
+                    Property::Name(value) => Str::from(value).into(),
+                    Property::Description(value) => Str::from(value).into(),
+                    Property::Parent(parent) => {
+                        let parent = match parent {
+                            NodeIdOrRoot::Node(node) => ObjectId::Node {
+                                adapter: adapter_id,
+                                node,
+                            },
+                            NodeIdOrRoot::Root => ObjectId::Root,
+                        };
+                        parent.to_address(self.unique_name().inner()).into()
+                    }
+                    Property::Role(value) => Value::U32(value as u32),
+                    Property::Value(value) => Value::F64(value),
+                };
+                self.emit_event(target, interface, signal, body).await
+            }
+            ObjectEvent::SelectionChanged => {
+                self.emit_event(target, interface, signal, EventBodyBorrowed::default())
+                    .await
             }
             ObjectEvent::StateChanged(state, value) => {
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: state,
-                        detail1: value as i32,
-                        detail2: 0,
-                        any_data: 0i32.into(),
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.kind = state.to_static_str();
+                body.detail1 = value as i32;
+                self.emit_event(target, interface, signal, body).await
             }
             ObjectEvent::TextInserted {
                 start_index,
                 length,
                 content,
             } => {
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: "insert",
-                        detail1: start_index,
-                        detail2: length,
-                        any_data: content.into(),
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.kind = "insert";
+                body.detail1 = start_index;
+                body.detail2 = length;
+                body.any_data = content.into();
+                self.emit_event(target, interface, signal, body).await
             }
             ObjectEvent::TextRemoved {
                 start_index,
                 length,
                 content,
             } => {
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: "delete",
-                        detail1: start_index,
-                        detail2: length,
-                        any_data: content.into(),
-                        properties,
-                    },
-                )
-                .await
+                let mut body = EventBodyBorrowed::default();
+                body.kind = "delete";
+                body.detail1 = start_index;
+                body.detail2 = length;
+                body.any_data = content.into();
+                self.emit_event(target, interface, signal, body).await
             }
             ObjectEvent::TextSelectionChanged => {
-                self.emit_event(
-                    target,
-                    interface,
-                    signal,
-                    EventBody {
-                        kind: "",
-                        detail1: 0,
-                        detail2: 0,
-                        any_data: "".into(),
-                        properties,
-                    },
-                )
-                .await
+                self.emit_event(target, interface, signal, EventBodyBorrowed::default())
+                    .await
             }
         }
     }
@@ -441,27 +363,18 @@ impl Bus {
             WindowEvent::Activated => "Activate",
             WindowEvent::Deactivated => "Deactivate",
         };
-        self.emit_event(
-            target,
-            "org.a11y.atspi.Event.Window",
-            signal,
-            EventBody {
-                kind: "",
-                detail1: 0,
-                detail2: 0,
-                any_data: window_name.into(),
-                properties: HashMap::new(),
-            },
-        )
-        .await
+        let mut body = EventBodyBorrowed::default();
+        body.any_data = window_name.into();
+        self.emit_event(target, "org.a11y.atspi.Event.Window", signal, body)
+            .await
     }
 
-    async fn emit_event<T: Serialize>(
+    async fn emit_event(
         &self,
         target: ObjectId,
         interface: &str,
         signal_name: &str,
-        body: EventBody<'_, T>,
+        body: EventBodyBorrowed<'_>,
     ) -> Result<()> {
         map_or_ignoring_broken_pipe(
             self.conn

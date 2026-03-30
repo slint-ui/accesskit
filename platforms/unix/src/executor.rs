@@ -41,7 +41,7 @@ pub(crate) struct Executor<'a> {
     phantom: PhantomData<&'a ()>,
 }
 
-impl<'a> Executor<'a> {
+impl Executor<'_> {
     /// Spawns a task onto the executor.
     pub(crate) fn spawn<T: Send + 'static>(
         &self,
@@ -55,20 +55,7 @@ impl<'a> Executor<'a> {
 
         #[cfg(feature = "tokio")]
         {
-            #[cfg(tokio_unstable)]
-            {
-                Task(Some(
-                    tokio::task::Builder::new()
-                        .name(name)
-                        .spawn(future)
-                        // SAFETY: Looking at the code, this call always returns an `Ok`.
-                        .unwrap(),
-                ))
-            }
-            #[cfg(not(tokio_unstable))]
-            {
-                Task(Some(tokio::task::spawn(future)))
-            }
+            Task(Some(tokio::task::spawn(future)))
         }
     }
 

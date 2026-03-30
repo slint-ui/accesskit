@@ -21,7 +21,7 @@ use tokio::{
 };
 #[cfg(feature = "tokio")]
 use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt};
-use zbus::{Connection, ConnectionBuilder};
+use zbus::{connection::Builder, Connection};
 
 use crate::{
     adapter::{AdapterState, Callback, Message},
@@ -33,8 +33,15 @@ use crate::{
 static APP_CONTEXT: OnceLock<Arc<RwLock<AppContext>>> = OnceLock::new();
 static MESSAGES: OnceLock<Sender<Message>> = OnceLock::new();
 
+fn app_name() -> Option<String> {
+    std::env::current_exe().ok().and_then(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_string())
+    })
+}
+
 pub(crate) fn get_or_init_app_context<'a>() -> &'a Arc<RwLock<AppContext>> {
-    APP_CONTEXT.get_or_init(AppContext::new)
+    APP_CONTEXT.get_or_init(|| AppContext::new(app_name()))
 }
 
 pub(crate) fn get_or_init_messages() -> Sender<Message> {
@@ -48,7 +55,7 @@ pub(crate) fn get_or_init_messages() -> Sender<Message> {
             thread::spawn(|| {
                 let executor = Executor::new();
                 block_on(executor.run(async {
-                    if let Ok(session_bus) = ConnectionBuilder::session() {
+                    if let Ok(session_bus) = Builder::session() {
                         if let Ok(session_bus) = session_bus.internal_executor(false).build().await
                         {
                             run_event_loop(&executor, session_bus, rx).await.unwrap();
@@ -144,7 +151,7 @@ async fn run_event_loop(
     );
 
     let status = StatusProxy::new(&session_bus).await?;
-    let changes = status.receive_is_enabled_changed().await.fuse();
+    let changes = status.receive_screen_reader_enabled_changed().await.fuse();
     pin!(changes);
 
     #[cfg(not(feature = "tokio"))]

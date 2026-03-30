@@ -8,7 +8,7 @@ use crate::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use accesskit::{ActionHandler, ActivationHandler, DeactivationHandler, TreeUpdate};
 use accesskit_windows::{SubclassingAdapter, HWND};
-use winit::{event::WindowEvent, window::Window};
+use winit::{event::WindowEvent, event_loop::ActiveEventLoop, window::Window};
 
 pub struct Adapter {
     adapter: SubclassingAdapter,
@@ -16,6 +16,7 @@ pub struct Adapter {
 
 impl Adapter {
     pub fn new(
+        _event_loop: &ActiveEventLoop,
         window: &Window,
         activation_handler: impl 'static + ActivationHandler,
         action_handler: impl 'static + ActionHandler + Send,
@@ -23,13 +24,13 @@ impl Adapter {
     ) -> Self {
         #[cfg(feature = "rwh_05")]
         let hwnd = match window.raw_window_handle() {
-            RawWindowHandle::Win32(handle) => handle.hwnd as isize,
+            RawWindowHandle::Win32(handle) => handle.hwnd,
             RawWindowHandle::WinRt(_) => unimplemented!(),
             _ => unreachable!(),
         };
         #[cfg(feature = "rwh_06")]
         let hwnd = match window.window_handle().unwrap().as_raw() {
-            RawWindowHandle::Win32(handle) => handle.hwnd.get(),
+            RawWindowHandle::Win32(handle) => handle.hwnd.get() as *mut _,
             RawWindowHandle::WinRt(_) => unimplemented!(),
             _ => unreachable!(),
         };

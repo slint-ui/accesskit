@@ -58,6 +58,277 @@
   * dependencies
     * accesskit_atspi_common bumped from 0.7.0 to 0.8.0
 
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.16.2 to 0.16.3
+    * accesskit_atspi_common bumped from 0.9.2 to 0.9.3
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.17.0 to 0.17.1
+    * accesskit_atspi_common bumped from 0.10.0 to 0.10.1
+
+## [0.21.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.20.0...accesskit_unix-v0.21.0) (2026-03-04)
+
+
+### Features
+
+* Implement text attributes for AT-SPI ([#695](https://github.com/AccessKit/accesskit/issues/695)) ([33fc4f0](https://github.com/AccessKit/accesskit/commit/33fc4f06699da335f9b2de3ab381cc940314e9c1))
+
+
+### Bug Fixes
+
+* Correctly register interfaces on Unix after Hyperlink was added ([#694](https://github.com/AccessKit/accesskit/issues/694)) ([b5979a4](https://github.com/AccessKit/accesskit/commit/b5979a4c88f5d9084f70525cf24f3a37c0988f57))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit_atspi_common bumped from 0.17.0 to 0.18.0
+
+## [0.20.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.19.1...accesskit_unix-v0.20.0) (2026-02-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* Update minimum supported Rust version to 1.85 ([#683](https://github.com/AccessKit/accesskit/issues/683))
+
+### Bug Fixes
+
+* Update minimum supported Rust version to 1.85 ([#683](https://github.com/AccessKit/accesskit/issues/683)) ([f8c22cb](https://github.com/AccessKit/accesskit/commit/f8c22cbb53ce6b1859adeff3c0b7154ad9e1f25e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.23.0 to 0.24.0
+    * accesskit_atspi_common bumped from 0.16.1 to 0.17.0
+
+## [0.19.1](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.19.0...accesskit_unix-v0.19.1) (2026-01-18)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit_atspi_common bumped from 0.16.0 to 0.16.1
+
+## [0.19.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.18.0...accesskit_unix-v0.19.0) (2026-01-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* Multiple tree support ([#655](https://github.com/AccessKit/accesskit/issues/655))
+
+### Features
+
+* Implement the `url` property ([#669](https://github.com/AccessKit/accesskit/issues/669)) ([6202e63](https://github.com/AccessKit/accesskit/commit/6202e63c667e73216a306b3dd45ff25c364a4f45))
+* Multiple tree support ([#655](https://github.com/AccessKit/accesskit/issues/655)) ([c16eb80](https://github.com/AccessKit/accesskit/commit/c16eb80c49d14f39e8a7defb1694bf22b8ceed6f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.22.0 to 0.23.0
+    * accesskit_atspi_common bumped from 0.15.0 to 0.16.0
+
+## [0.18.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.17.2...accesskit_unix-v0.18.0) (2025-12-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* Drop deprecated roles ([#642](https://github.com/AccessKit/accesskit/issues/642))
+* Infrastructure for supporting text formatting changes ([#626](https://github.com/AccessKit/accesskit/issues/626))
+
+### Features
+
+* Add GridCell role ([#643](https://github.com/AccessKit/accesskit/issues/643)) ([1e5abca](https://github.com/AccessKit/accesskit/commit/1e5abca737d1ee942c0804fec2c06d3cb08faa94))
+* Implement BrailleLabel and BrailleRoleDescription roles ([#638](https://github.com/AccessKit/accesskit/issues/638)) ([0fdcebb](https://github.com/AccessKit/accesskit/commit/0fdcebb55e308e039ec99fbc31e94e8087a69f2d))
+
+
+### Bug Fixes
+
+* Activate when an assistive technology is actually running on Unix ([#628](https://github.com/AccessKit/accesskit/issues/628)) ([ec67fdf](https://github.com/AccessKit/accesskit/commit/ec67fdf1ec549913437a601fcd1fa142ec52c47d))
+* Bump atspi crates ([dbf81c9](https://github.com/AccessKit/accesskit/commit/dbf81c968739187a9f4c3c105d0618c0f9db3135))
+
+
+### Code Refactoring
+
+* Drop deprecated roles ([#642](https://github.com/AccessKit/accesskit/issues/642)) ([4d46c27](https://github.com/AccessKit/accesskit/commit/4d46c2740631c5fe4f057707b949d12b26931d0b))
+* Infrastructure for supporting text formatting changes ([#626](https://github.com/AccessKit/accesskit/issues/626)) ([ea23ec4](https://github.com/AccessKit/accesskit/commit/ea23ec424c7dbb8841e03d71b6a15b74264850a9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.21.1 to 0.22.0
+    * accesskit_atspi_common bumped from 0.14.2 to 0.15.0
+
+## [0.17.2](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.17.1...accesskit_unix-v0.17.2) (2025-10-20)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit_atspi_common bumped from 0.14.1 to 0.14.2
+
+## [0.17.1](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.17.0...accesskit_unix-v0.17.1) (2025-10-02)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.21.0 to 0.21.1
+    * accesskit_atspi_common bumped from 0.14.0 to 0.14.1
+
+## [0.17.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.16.0...accesskit_unix-v0.17.0) (2025-07-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* Implement refactored `ScrollIntoView` action across desktop platforms ([#594](https://github.com/AccessKit/accesskit/issues/594))
+
+### Features
+
+* Implement refactored `ScrollIntoView` action across desktop platforms ([#594](https://github.com/AccessKit/accesskit/issues/594)) ([1d9b74c](https://github.com/AccessKit/accesskit/commit/1d9b74c057051509b3ffbf63afeacfb16f544ff8))
+* Let parents declare actions supported on their children ([#593](https://github.com/AccessKit/accesskit/issues/593)) ([70b534b](https://github.com/AccessKit/accesskit/commit/70b534bed168a84b84cc35199588aa8ab784fb43))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.20.0 to 0.21.0
+    * accesskit_atspi_common bumped from 0.13.0 to 0.14.0
+
+## [0.16.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.15.0...accesskit_unix-v0.16.0) (2025-06-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* Force a semver-breaking release ([#589](https://github.com/AccessKit/accesskit/issues/589))
+
+### Bug Fixes
+
+* Force a semver-breaking release ([#589](https://github.com/AccessKit/accesskit/issues/589)) ([2887cdd](https://github.com/AccessKit/accesskit/commit/2887cddde817ba3851688068d8d10de5cef7c624))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.19.0 to 0.20.0
+    * accesskit_atspi_common bumped from 0.12.0 to 0.13.0
+
+## [0.15.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.14.0...accesskit_unix-v0.15.0) (2025-05-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* Drop redundant `HasPopup::True` ([#550](https://github.com/AccessKit/accesskit/issues/550))
+
+### Bug Fixes
+
+* Expose tabs in the platform adapters ([341a11b](https://github.com/AccessKit/accesskit/commit/341a11bca2c8a29682c11ddcfe91fa58776ea11d))
+* Mention caveats with window bounds under Wayland ([#559](https://github.com/AccessKit/accesskit/issues/559)) ([b0cf01a](https://github.com/AccessKit/accesskit/commit/b0cf01a26ded03d722818a193fa6902f69bbc102))
+
+
+### Code Refactoring
+
+* Drop redundant `HasPopup::True` ([#550](https://github.com/AccessKit/accesskit/issues/550)) ([56abf17](https://github.com/AccessKit/accesskit/commit/56abf17356e4c7f13f64aaeaca6a63c8f7ede553))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.18.0 to 0.19.0
+    * accesskit_atspi_common bumped from 0.11.0 to 0.12.0
+
+## [0.14.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.13.1...accesskit_unix-v0.14.0) (2025-03-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* Drop `Tree::app_name` ([#492](https://github.com/AccessKit/accesskit/issues/492))
+
+### Bug Fixes
+
+* Add list box support to the platform adapters ([6c622cf](https://github.com/AccessKit/accesskit/commit/6c622cff4c0c989d9a5f16b775adff9cdacf534c))
+* Derive `Debug` for adapters ([#513](https://github.com/AccessKit/accesskit/issues/513)) ([753d904](https://github.com/AccessKit/accesskit/commit/753d90473cf57682568c7a17c82474c8e5d00b25))
+* Don't enable the `zbus/tokio` feature on Unix ([#521](https://github.com/AccessKit/accesskit/issues/521)) ([9dfad97](https://github.com/AccessKit/accesskit/commit/9dfad9796f71563a78bc6a7d5f01b111d80e63e6))
+* Fix some clippy warnings ([#509](https://github.com/AccessKit/accesskit/issues/509)) ([579b9c1](https://github.com/AccessKit/accesskit/commit/579b9c12dd8abc44ecab41fa3c326a1d8999871d))
+* Update zbus to 5.0 ([#519](https://github.com/AccessKit/accesskit/issues/519)) ([4c10b80](https://github.com/AccessKit/accesskit/commit/4c10b801b6924c7010b83f4eb44c8c350c860cf6))
+
+
+### Code Refactoring
+
+* Drop `Tree::app_name` ([#492](https://github.com/AccessKit/accesskit/issues/492)) ([089794c](https://github.com/AccessKit/accesskit/commit/089794c8f74957e91a19ae3df508e2a892f39ebc))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.17.1 to 0.18.0
+    * accesskit_atspi_common bumped from 0.10.1 to 0.11.0
+
+## [0.13.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.12.3...accesskit_unix-v0.13.0) (2024-10-31)
+
+
+### ⚠ BREAKING CHANGES
+
+* Make the core crate no-std ([#468](https://github.com/AccessKit/accesskit/issues/468))
+
+### Features
+
+* Make the core crate no-std ([#468](https://github.com/AccessKit/accesskit/issues/468)) ([2fa0d3f](https://github.com/AccessKit/accesskit/commit/2fa0d3f5b2b7ac11ef1751c133706f29e548bd6d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.16.3 to 0.17.0
+    * accesskit_atspi_common bumped from 0.9.3 to 0.10.0
+
+## [0.12.2](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.12.1...accesskit_unix-v0.12.2) (2024-10-07)
+
+
+### Bug Fixes
+
+* Update minimum supported Rust version to 1.75 ([#457](https://github.com/AccessKit/accesskit/issues/457)) ([fc622fe](https://github.com/AccessKit/accesskit/commit/fc622fe7657c80a4eedad6f6cded11d2538b54d5))
+* Update to zbus v4 ([#456](https://github.com/AccessKit/accesskit/issues/456)) ([95db8f1](https://github.com/AccessKit/accesskit/commit/95db8f1c5f7f56598eab6910a990ccbf9d864dda))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.16.1 to 0.16.2
+    * accesskit_atspi_common bumped from 0.9.1 to 0.9.2
+
+## [0.12.1](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.12.0...accesskit_unix-v0.12.1) (2024-09-24)
+
+
+### Bug Fixes
+
+* Return a null object for AT-SPI application's parent ([#454](https://github.com/AccessKit/accesskit/issues/454)) ([8a84abf](https://github.com/AccessKit/accesskit/commit/8a84abf81eaf22dd3672813ca36f1a422b5c0f1e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * accesskit bumped from 0.16.0 to 0.16.1
+    * accesskit_atspi_common bumped from 0.9.0 to 0.9.1
+
 ## [0.12.0](https://github.com/AccessKit/accesskit/compare/accesskit_unix-v0.11.1...accesskit_unix-v0.12.0) (2024-06-29)
 
 

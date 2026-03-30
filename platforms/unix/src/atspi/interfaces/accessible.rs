@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use accesskit_atspi_common::{NodeIdOrRoot, PlatformNode, PlatformRoot};
-use atspi::{Interface, InterfaceSet, Role, StateSet};
-use zbus::{fdo, names::OwnedUniqueName};
+use atspi::{Interface, InterfaceSet, RelationType, Role, StateSet};
+use zbus::{fdo, interface, names::OwnedUniqueName};
 
 use super::map_root_error;
 use crate::atspi::{ObjectId, OwnedObjectAddress};
@@ -27,19 +27,19 @@ impl NodeAccessibleInterface {
     }
 }
 
-#[dbus_interface(name = "org.a11y.atspi.Accessible")]
+#[interface(name = "org.a11y.atspi.Accessible")]
 impl NodeAccessibleInterface {
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn name(&self) -> fdo::Result<String> {
         self.node.name().map_err(self.map_error())
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn description(&self) -> fdo::Result<String> {
         self.node.description().map_err(self.map_error())
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn parent(&self) -> fdo::Result<OwnedObjectAddress> {
         self.node.parent().map_err(self.map_error()).map(|parent| {
             match parent {
@@ -49,21 +49,21 @@ impl NodeAccessibleInterface {
                 },
                 NodeIdOrRoot::Root => ObjectId::Root,
             }
-            .to_address(self.bus_name.clone())
+            .to_address(self.bus_name.inner())
         })
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn child_count(&self) -> fdo::Result<i32> {
         self.node.child_count().map_err(self.map_error())
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn locale(&self) -> &str {
         ""
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn accessible_id(&self) -> fdo::Result<String> {
         self.node.accessible_id().map_err(self.map_error())
     }
@@ -90,13 +90,29 @@ impl NodeAccessibleInterface {
                     adapter: self.node.adapter_id(),
                     node: child,
                 }
-                .to_address(self.bus_name.clone())
+                .to_address(self.bus_name.inner())
             })
             .map_err(self.map_error())
     }
 
     fn get_index_in_parent(&self) -> fdo::Result<i32> {
         self.node.index_in_parent().map_err(self.map_error())
+    }
+
+    fn get_relation_set(&self) -> fdo::Result<Vec<(RelationType, Vec<OwnedObjectAddress>)>> {
+        self.node
+            .relation_set(|relation| {
+                ObjectId::Node {
+                    adapter: self.node.adapter_id(),
+                    node: relation,
+                }
+                .to_address(self.bus_name.inner())
+            })
+            .map(|set| {
+                set.into_iter()
+                    .collect::<Vec<(RelationType, Vec<OwnedObjectAddress>)>>()
+            })
+            .map_err(self.map_error())
     }
 
     fn get_role(&self) -> fdo::Result<Role> {
@@ -116,7 +132,7 @@ impl NodeAccessibleInterface {
     }
 
     fn get_application(&self) -> (OwnedObjectAddress,) {
-        (ObjectId::Root.to_address(self.bus_name.clone()),)
+        (ObjectId::Root.to_address(self.bus_name.inner()),)
     }
 
     fn get_interfaces(&self) -> fdo::Result<InterfaceSet> {
@@ -126,52 +142,43 @@ impl NodeAccessibleInterface {
 
 pub(crate) struct RootAccessibleInterface {
     bus_name: OwnedUniqueName,
-    desktop_address: OwnedObjectAddress,
     root: PlatformRoot,
 }
 
 impl RootAccessibleInterface {
-    pub fn new(
-        bus_name: OwnedUniqueName,
-        desktop_address: OwnedObjectAddress,
-        root: PlatformRoot,
-    ) -> Self {
-        Self {
-            bus_name,
-            desktop_address,
-            root,
-        }
+    pub fn new(bus_name: OwnedUniqueName, root: PlatformRoot) -> Self {
+        Self { bus_name, root }
     }
 }
 
-#[dbus_interface(name = "org.a11y.atspi.Accessible")]
+#[interface(name = "org.a11y.atspi.Accessible")]
 impl RootAccessibleInterface {
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn name(&self) -> fdo::Result<String> {
         self.root.name().map_err(map_root_error)
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn description(&self) -> &str {
         ""
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn parent(&self) -> OwnedObjectAddress {
-        self.desktop_address.clone()
+        OwnedObjectAddress::null()
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn child_count(&self) -> fdo::Result<i32> {
         self.root.child_count().map_err(map_root_error)
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn locale(&self) -> &str {
         ""
     }
 
-    #[dbus_interface(property)]
+    #[zbus(property)]
     fn accessible_id(&self) -> &str {
         ""
     }
@@ -191,13 +198,17 @@ impl RootAccessibleInterface {
     fn get_children(&self) -> fdo::Result<Vec<OwnedObjectAddress>> {
         self.root
             .map_child_ids(|(adapter, node)| {
-                ObjectId::Node { adapter, node }.to_address(self.bus_name.clone())
+                ObjectId::Node { adapter, node }.to_address(self.bus_name.inner())
             })
             .map_err(map_root_error)
     }
 
     fn get_index_in_parent(&self) -> i32 {
         -1
+    }
+
+    fn get_relation_set(&self) -> Vec<(RelationType, Vec<OwnedObjectAddress>)> {
+        Vec::new()
     }
 
     fn get_role(&self) -> Role {
@@ -209,7 +220,7 @@ impl RootAccessibleInterface {
     }
 
     fn get_application(&self) -> (OwnedObjectAddress,) {
-        (ObjectId::Root.to_address(self.bus_name.clone()),)
+        (ObjectId::Root.to_address(self.bus_name.inner()),)
     }
 
     fn get_interfaces(&self) -> InterfaceSet {

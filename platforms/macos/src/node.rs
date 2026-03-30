@@ -11,9 +11,9 @@
 #![allow(non_upper_case_globals)]
 
 use accesskit::{
-    Action, ActionData, ActionRequest, NodeId, Orientation, Role, TextSelection, Toggled,
+    Action, ActionData, ActionRequest, Orientation, Role, TextAlign, TextSelection, Toggled,
 };
-use accesskit_consumer::{FilterResult, Node};
+use accesskit_consumer::{FilterResult, Node, NodeId, Tree};
 use objc2::{
     declare_class, msg_send_id,
     mutability::InteriorMutable,
@@ -23,12 +23,15 @@ use objc2::{
 };
 use objc2_app_kit::*;
 use objc2_foundation::{
-    ns_string, NSArray, NSCopying, NSInteger, NSNumber, NSObject, NSPoint, NSRange, NSRect,
-    NSString,
+    ns_string, NSArray, NSAttributedString, NSCopying, NSInteger, NSMutableAttributedString,
+    NSMutableDictionary, NSNumber, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSString,
+    NSURL,
 };
 use std::rc::{Rc, Weak};
 
 use crate::{context::Context, filters::filter, util::*};
+
+const SCROLL_TO_VISIBLE_ACTION: &str = "AXScrollToVisible";
 
 fn ns_role(node: &Node) -> &'static NSAccessibilityRole {
     let role = node.role();
@@ -36,8 +39,8 @@ fn ns_role(node: &Node) -> &'static NSAccessibilityRole {
     unsafe {
         match role {
             Role::Unknown => NSAccessibilityUnknownRole,
-            Role::InlineTextBox => NSAccessibilityUnknownRole,
-            Role::Cell => NSAccessibilityCellRole,
+            Role::TextRun => NSAccessibilityUnknownRole,
+            Role::Cell | Role::GridCell => NSAccessibilityCellRole,
             Role::Label => NSAccessibilityStaticTextRole,
             Role::Image => NSAccessibilityImageRole,
             Role::Link => NSAccessibilityLinkRole,
@@ -85,7 +88,7 @@ fn ns_role(node: &Node) -> &'static NSAccessibilityRole {
             Role::TimeInput => ns_string!("AXTimeField"),
             Role::Abbr => NSAccessibilityGroupRole,
             Role::Alert => NSAccessibilityGroupRole,
-            Role::AlertDialog => NSAccessibilityGroupRole,
+            Role::AlertDialog => NSAccessibilityWindowRole,
             Role::Application => NSAccessibilityGroupRole,
             Role::Article => NSAccessibilityGroupRole,
             Role::Audio => NSAccessibilityGroupRole,
@@ -105,11 +108,8 @@ fn ns_role(node: &Node) -> &'static NSAccessibilityRole {
             Role::ContentInfo => NSAccessibilityGroupRole,
             Role::Definition => NSAccessibilityGroupRole,
             Role::DescriptionList => NSAccessibilityListRole,
-            Role::DescriptionListDetail => NSAccessibilityGroupRole,
-            Role::DescriptionListTerm => NSAccessibilityGroupRole,
             Role::Details => NSAccessibilityGroupRole,
-            Role::Dialog => NSAccessibilityGroupRole,
-            Role::Directory => NSAccessibilityListRole,
+            Role::Dialog => NSAccessibilityWindowRole,
             Role::DisclosureTriangle => NSAccessibilityButtonRole,
             Role::Document => NSAccessibilityGroupRole,
             Role::EmbeddedObject => NSAccessibilityGroupRole,
@@ -118,12 +118,10 @@ fn ns_role(node: &Node) -> &'static NSAccessibilityRole {
             Role::FigureCaption => NSAccessibilityGroupRole,
             Role::Figure => NSAccessibilityGroupRole,
             Role::Footer => NSAccessibilityGroupRole,
-            Role::FooterAsNonLandmark => NSAccessibilityGroupRole,
             Role::Form => NSAccessibilityGroupRole,
             Role::Grid => NSAccessibilityTableRole,
             Role::Group => NSAccessibilityGroupRole,
             Role::Header => NSAccessibilityGroupRole,
-            Role::HeaderAsNonLandmark => NSAccessibilityGroupRole,
             Role::Heading => ns_string!("Heading"),
             Role::Iframe => NSAccessibilityGroupRole,
             Role::IframePresentational => NSAccessibilityGroupRole,
@@ -145,8 +143,6 @@ fn ns_role(node: &Node) -> &'static NSAccessibilityRole {
             Role::Navigation => NSAccessibilityGroupRole,
             Role::Note => NSAccessibilityGroupRole,
             Role::PluginObject => NSAccessibilityGroupRole,
-            Role::Portal => NSAccessibilityButtonRole,
-            Role::Pre => NSAccessibilityGroupRole,
             Role::ProgressIndicator => NSAccessibilityProgressIndicatorRole,
             Role::RadioGroup => NSAccessibilityRadioGroupRole,
             Role::Region => NSAccessibilityGroupRole,
@@ -157,6 +153,8 @@ fn ns_role(node: &Node) -> &'static NSAccessibilityRole {
             Role::ScrollView => NSAccessibilityUnknownRole,
             Role::Search => NSAccessibilityGroupRole,
             Role::Section => NSAccessibilityGroupRole,
+            Role::SectionFooter => NSAccessibilityGroupRole,
+            Role::SectionHeader => NSAccessibilityGroupRole,
             Role::Slider => NSAccessibilitySliderRole,
             Role::SpinButton => NSAccessibilityIncrementorRole,
             Role::Splitter => NSAccessibilitySplitterRole,
@@ -232,6 +230,61 @@ fn ns_role(node: &Node) -> &'static NSAccessibilityRole {
     }
 }
 
+fn ns_sub_role(node: &Node) -> &'static NSAccessibilitySubrole {
+    let role = node.role();
+
+    unsafe {
+        match role {
+            Role::Alert => ns_string!("AXApplicationAlert"),
+            Role::AlertDialog => NSAccessibilityDialogSubrole,
+            Role::Article => ns_string!("AXDocumentArticle"),
+            Role::Banner => ns_string!("AXLandmarkBanner"),
+            Role::Button if node.toggled().is_some() => NSAccessibilityToggleSubrole,
+            Role::Code => ns_string!("AXCodeStyleGroup"),
+            Role::Complementary => ns_string!("AXLandmarkComplementary"),
+            Role::ContentDeletion => ns_string!("AXDeleteStyleGroup"),
+            Role::ContentInsertion => ns_string!("AXInsertStyleGroup"),
+            Role::ContentInfo => ns_string!("AXLandmarkContentInfo"),
+            Role::Definition => ns_string!("AXDefinition"),
+            Role::Dialog => NSAccessibilityDialogSubrole,
+            Role::Document => ns_string!("AXDocument"),
+            Role::Emphasis => ns_string!("AXEmphasisStyleGroup"),
+            Role::Feed => ns_string!("AXApplicationGroup"),
+            Role::Footer => ns_string!("AXLandmarkContentInfo"),
+            Role::Form => ns_string!("AXLandmarkForm"),
+            Role::GraphicsDocument => ns_string!("AXDocument"),
+            Role::Group => ns_string!("AXApplicationGroup"),
+            Role::Header => ns_string!("AXLandmarkBanner"),
+            Role::LayoutTableCell => NSAccessibilityGroupRole,
+            Role::LayoutTableRow => NSAccessibilityTableRowSubrole,
+            Role::Log => ns_string!("AXApplicationLog"),
+            Role::Main => ns_string!("AXLandmarkMain"),
+            Role::Marquee => ns_string!("AXApplicationMarquee"),
+            Role::Math => ns_string!("AXDocumentMath"),
+            Role::Meter => ns_string!("AXMeter"),
+            Role::Navigation => ns_string!("AXLandmarkNavigation"),
+            Role::Note => ns_string!("AXDocumentNote"),
+            Role::PasswordInput => NSAccessibilitySecureTextFieldSubrole,
+            Role::Region => ns_string!("AXLandmarkRegion"),
+            Role::Search => ns_string!("AXLandmarkSearch"),
+            Role::SearchInput => NSAccessibilitySearchFieldSubrole,
+            Role::SectionFooter => ns_string!("AXSectionFooter"),
+            Role::SectionHeader => ns_string!("AXSectionHeader"),
+            Role::Status => ns_string!("AXApplicationStatus"),
+            Role::Strong => ns_string!("AXStrongStyleGroup"),
+            Role::Switch => NSAccessibilitySwitchSubrole,
+            Role::Tab => NSAccessibilityTabButtonSubrole,
+            Role::TabPanel => ns_string!("AXTabPanel"),
+            Role::Term => ns_string!("AXTerm"),
+            Role::Time => ns_string!("AXTimeGroup"),
+            Role::Timer => ns_string!("AXApplicationTimer"),
+            Role::TreeItem => NSAccessibilityOutlineRowSubrole,
+            Role::Tooltip => ns_string!("AXUserInterfaceTooltip"),
+            _ => NSAccessibilityUnknownSubrole,
+        }
+    }
+}
+
 pub(crate) fn can_be_focused(node: &Node) -> bool {
     filter(node) == FilterResult::Include && node.role() != Role::Window
 }
@@ -245,60 +298,42 @@ pub(crate) enum Value {
 
 pub(crate) struct NodeWrapper<'a>(pub(crate) &'a Node<'a>);
 
-impl<'a> NodeWrapper<'a> {
+impl NodeWrapper<'_> {
     fn is_root(&self) -> bool {
         self.0.is_root()
     }
 
-    fn name(&self) -> Option<String> {
+    pub(crate) fn title(&self) -> Option<String> {
         if self.is_root() && self.0.role() == Role::Window {
             // If the group element that we expose for the top-level window
             // includes a title, VoiceOver behavior is broken.
             return None;
         }
-        self.0.name()
-    }
-
-    fn node_value(&self) -> Option<String> {
-        self.0.value()
-    }
-
-    // TODO: implement proper logic for title and value;
-    // see Chromium's content/browser/accessibility/browser_accessibility_cocoa.mm
-    // and figure out how this is different in the macOS 10.10+ protocol
-
-    pub(crate) fn title(&self) -> Option<String> {
-        let state = self.0;
-        if state.role() == Role::Label && state.raw_value().is_none() {
-            // In this case, macOS wants the text to be the value, not title.
-            return None;
-        }
-        self.name()
+        self.0.label()
     }
 
     pub(crate) fn description(&self) -> Option<String> {
         self.0.description()
     }
 
-    pub(crate) fn placeholder(&self) -> Option<String> {
+    pub(crate) fn placeholder(&self) -> Option<&str> {
         self.0.placeholder()
     }
 
     pub(crate) fn value(&self) -> Option<Value> {
-        let state = self.0;
-        if let Some(toggled) = state.toggled() {
+        if let Some(toggled) = self.0.toggled() {
             return Some(Value::Bool(toggled != Toggled::False));
         }
-        if let Some(value) = self.node_value() {
+        if self.0.role() == Role::Tab {
+            // On Mac, tabs are exposed as radio buttons, and are treated as checkable.
+            // Also, `Node::is_selected` is mapped to checked via `accessibilityValue`.
+            return Some(Value::Bool(self.0.is_selected().unwrap_or(false)));
+        }
+        if let Some(value) = self.0.value() {
             return Some(Value::String(value));
         }
-        if let Some(value) = state.numeric_value() {
+        if let Some(value) = self.0.numeric_value() {
             return Some(Value::Number(value));
-        }
-        if state.role() == Role::Label {
-            if let Some(name) = self.name() {
-                return Some(Value::String(name));
-            }
         }
         None
     }
@@ -310,6 +345,21 @@ impl<'a> NodeWrapper<'a> {
     pub(crate) fn raw_text_selection(&self) -> Option<&TextSelection> {
         self.0.raw_text_selection()
     }
+
+    fn is_container_with_selectable_children(&self) -> bool {
+        self.0.is_container_with_selectable_children() && self.0.role() != Role::TabList
+    }
+
+    pub(crate) fn is_item_like(&self) -> bool {
+        self.0.is_item_like() && self.0.role() != Role::Tab
+    }
+}
+
+// derived from objc2 0.6 `AnyObject::downcast_ref`
+// TODO: can be removed after updating objc2 to 0.6 which has `AnyObject::downcast_ref`
+fn downcast_ref<T: ClassType>(obj: &NSObject) -> Option<&T> {
+    obj.is_kind_of::<T>()
+        .then(|| unsafe { &*(obj as *const NSObject).cast::<T>() })
 }
 
 pub(crate) struct PlatformNodeIvars {
@@ -318,6 +368,7 @@ pub(crate) struct PlatformNodeIvars {
 }
 
 declare_class!(
+    #[derive(Debug)]
     pub(crate) struct PlatformNode;
 
     unsafe impl ClassType for PlatformNode {
@@ -334,7 +385,7 @@ declare_class!(
     unsafe impl PlatformNode {
         #[method_id(accessibilityParent)]
         fn parent(&self) -> Option<Id<AnyObject>> {
-            self.resolve_with_context(|node, context| {
+            self.resolve_with_context(|node, _, context| {
                 if let Some(parent) = node.filtered_parent(&filter) {
                     Some(Id::into_super(Id::into_super(Id::into_super(context.get_or_create_platform_node(parent.id())))))
                 } else {
@@ -343,6 +394,28 @@ declare_class!(
                         .load()
                         .and_then(|view| unsafe { NSAccessibility::accessibilityParent(&*view) })
                 }
+            })
+            .flatten()
+        }
+
+        #[method_id(accessibilityWindow)]
+        fn window(&self) -> Option<Id<AnyObject>> {
+            self.resolve_with_context(|_, _, context| {
+                context
+                    .view
+                    .load()
+                    .and_then(|view| unsafe { NSAccessibility::accessibilityParent(&*view) })
+            })
+            .flatten()
+        }
+
+        #[method_id(accessibilityTopLevelUIElement)]
+        fn top_level(&self) -> Option<Id<AnyObject>> {
+            self.resolve_with_context(|_, _, context| {
+                context
+                    .view
+                    .load()
+                    .and_then(|view| unsafe { NSAccessibility::accessibilityParent(&*view) })
             })
             .flatten()
         }
@@ -358,9 +431,26 @@ declare_class!(
             self.children_internal()
         }
 
+        #[method_id(accessibilitySelectedChildren)]
+        fn selected_children(&self) -> Option<Id<NSArray<PlatformNode>>> {
+            self.resolve_with_context(|node, _, context| {
+                let wrapper = NodeWrapper(node);
+                if !wrapper.is_container_with_selectable_children() {
+                    return None;
+                }
+                let platform_nodes = node
+                    .items(filter)
+                    .filter(|item| item.is_selected() == Some(true))
+                    .map(|child| context.get_or_create_platform_node(child.id()))
+                    .collect::<Vec<Id<PlatformNode>>>();
+                Some(NSArray::from_vec(platform_nodes))
+            })
+            .flatten()
+        }
+
         #[method(accessibilityFrame)]
         fn frame(&self) -> NSRect {
-            self.resolve_with_context(|node, context| {
+            self.resolve_with_context(|node, _, context| {
                 let view = match context.view.load() {
                     Some(view) => view,
                     None => {
@@ -389,11 +479,18 @@ declare_class!(
                 .copy()
         }
 
+        #[method_id(accessibilitySubrole)]
+        fn sub_role(&self) -> Id<NSAccessibilitySubrole> {
+            self.resolve(ns_sub_role)
+                .unwrap_or(unsafe { NSAccessibilityUnknownSubrole })
+                .copy()
+        }
+
         #[method_id(accessibilityRoleDescription)]
         fn role_description(&self) -> Option<Id<NSString>> {
             self.resolve(|node| {
                 if let Some(role_description) = node.role_description() {
-                    Some(NSString::from_str(&role_description))
+                    Some(NSString::from_str(role_description))
                 } else {
                     unsafe { msg_send_id![super(self), accessibilityRoleDescription] }
                 }
@@ -431,7 +528,7 @@ declare_class!(
         fn placeholder(&self) -> Option<Id<NSString>> {
             self.resolve(|node| {
                 let wrapper = NodeWrapper(node);
-                wrapper.placeholder().map(|placeholder| NSString::from_str(&placeholder))
+                wrapper.placeholder().map(NSString::from_str)
             })
             .flatten()
         }
@@ -456,9 +553,30 @@ declare_class!(
         }
 
         #[method(setAccessibilityValue:)]
-        fn set_value(&self, _value: &NSObject) {
-            // This isn't yet implemented. See the comment on this selector
-            // in `is_selector_allowed`.
+        fn set_value(&self, value: &NSObject) {
+            if let Some(string) = downcast_ref::<NSString>(value) {
+                self.resolve_with_context(|node, tree, context| {
+                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                        context.do_action(ActionRequest {
+                            action: Action::SetValue,
+                            target_tree,
+                            target_node,
+                            data: Some(ActionData::Value(string.to_string().into())),
+                        });
+                    }
+                });
+            } else if let Some(number) = downcast_ref::<NSNumber>(value) {
+                self.resolve_with_context(|node, tree, context| {
+                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                        context.do_action(ActionRequest {
+                            action: Action::SetValue,
+                            target_tree,
+                            target_node,
+                            data: Some(ActionData::NumericValue(number.doubleValue())),
+                        });
+                    }
+                });
+            }
         }
 
         #[method_id(accessibilityMinValue)]
@@ -473,6 +591,17 @@ declare_class!(
         fn max_value(&self) -> Option<Id<NSNumber>> {
             self.resolve(|node| {
                 node.max_numeric_value().map(NSNumber::new_f64)
+            })
+            .flatten()
+        }
+
+        #[method_id(accessibilityURL)]
+        fn url(&self) -> Option<Id<NSURL>> {
+            self.resolve(|node| {
+                node.supports_url().then(|| node.url()).flatten().and_then(|url| {
+                    let ns_string = NSString::from_str(url);
+                    unsafe { NSURL::URLWithString(&ns_string) }
+                })
             })
             .flatten()
         }
@@ -501,25 +630,36 @@ declare_class!(
                 .unwrap_or(false)
         }
 
+        #[method(isAccessibilityEnabled)]
+        fn is_enabled(&self) -> bool {
+            self.resolve(|node| !node.is_disabled()).unwrap_or(false)
+        }
+
         #[method(setAccessibilityFocused:)]
         fn set_focused(&self, focused: bool) {
-            self.resolve_with_context(|node, context| {
+            self.resolve_with_context(|node, tree, context| {
                 if focused {
-                    if node.is_focusable() {
-                        context.do_action(ActionRequest {
-                            action: Action::Focus,
-                            target: node.id(),
-                            data: None,
-                        });
+                    if node.is_focusable(&filter) {
+                        if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                            context.do_action(ActionRequest {
+                                action: Action::Focus,
+                                target_tree,
+                                target_node,
+                                data: None,
+                            });
+                        }
                     }
                 } else {
-                    let root = node.tree_state.root();
-                    if root.is_focusable() {
-                        context.do_action(ActionRequest {
-                            action: Action::Focus,
-                            target: root.id(),
-                            data: None,
-                        });
+                    let root = tree.state().root();
+                    if root.is_focusable(&filter) {
+                        if let Some((target_node, target_tree)) = tree.state().locate_node(root.id()) {
+                            context.do_action(ActionRequest {
+                                action: Action::Focus,
+                                target_tree,
+                                target_node,
+                                data: None,
+                            });
+                        }
                     }
                 }
             });
@@ -527,14 +667,17 @@ declare_class!(
 
         #[method(accessibilityPerformPress)]
         fn press(&self) -> bool {
-            self.resolve_with_context(|node, context| {
-                let clickable = node.is_clickable();
+            self.resolve_with_context(|node, tree, context| {
+                let clickable = node.is_clickable(&filter);
                 if clickable {
-                    context.do_action(ActionRequest {
-                        action: Action::Default,
-                        target: node.id(),
-                        data: None,
-                    });
+                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                        context.do_action(ActionRequest {
+                            action: Action::Click,
+                            target_tree,
+                            target_node,
+                            data: None,
+                        });
+                    }
                 }
                 clickable
             })
@@ -543,14 +686,17 @@ declare_class!(
 
         #[method(accessibilityPerformIncrement)]
         fn increment(&self) -> bool {
-            self.resolve_with_context(|node, context| {
-                let supports_increment = node.supports_increment();
+            self.resolve_with_context(|node, tree, context| {
+                let supports_increment = node.supports_increment(&filter);
                 if supports_increment {
-                    context.do_action(ActionRequest {
-                        action: Action::Increment,
-                        target: node.id(),
-                        data: None,
-                    });
+                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                        context.do_action(ActionRequest {
+                            action: Action::Increment,
+                            target_tree,
+                            target_node,
+                            data: None,
+                        });
+                    }
                 }
                 supports_increment
             })
@@ -559,14 +705,17 @@ declare_class!(
 
         #[method(accessibilityPerformDecrement)]
         fn decrement(&self) -> bool {
-            self.resolve_with_context(|node, context| {
-                let supports_decrement = node.supports_decrement();
+            self.resolve_with_context(|node, tree, context| {
+                let supports_decrement = node.supports_decrement(&filter);
                 if supports_decrement {
-                    context.do_action(ActionRequest {
-                        action: Action::Decrement,
-                        target: node.id(),
-                        data: None,
-                    });
+                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                        context.do_action(ActionRequest {
+                            action: Action::Decrement,
+                            target_tree,
+                            target_node,
+                            data: None,
+                        });
+                    }
                 }
                 supports_decrement
             })
@@ -645,7 +794,7 @@ declare_class!(
 
         #[method(accessibilityRangeForPosition:)]
         fn range_for_position(&self, point: NSPoint) -> NSRange {
-            self.resolve_with_context(|node, context| {
+            self.resolve_with_context(|node, _, context| {
                 let view = match context.view.load() {
                     Some(view) => view,
                     None => {
@@ -677,9 +826,115 @@ declare_class!(
             .flatten()
         }
 
+        #[method_id(accessibilityAttributedStringForRange:)]
+        fn attributed_string_for_range(&self, range: NSRange) -> Option<Id<NSAttributedString>> {
+            self.resolve(|node| {
+                if node.supports_text_ranges() {
+                    if let Some(range) = from_ns_range(node, range) {
+                        let mut result = NSMutableAttributedString::new();
+                        unsafe { result.beginEditing() };
+                        range.traverse_text::<_, ()>(|node, text| {
+                            let ns_text = NSString::from_str(text);
+                            let mut attrs = NSMutableDictionary::new();
+                            if let Some(color) = node.background_color() {
+                                attrs.insert_id(
+                                    unsafe { NSAccessibilityBackgroundColorTextAttribute },
+                                    to_color_attribute(color)
+                                );
+                            }
+                            if let Some(color) = node.foreground_color() {
+                                attrs.insert_id(
+                                    unsafe { NSAccessibilityForegroundColorTextAttribute },
+                                    to_color_attribute(color)
+                                );
+                            }
+                            let mut font_attrs = NSMutableDictionary::<NSAccessibilityFontAttributeKey, AnyObject>::new();
+                            if let Some(family) = node.font_family() {
+                                font_attrs.insert_id(
+                                    unsafe { NSAccessibilityFontFamilyKey },
+                                    Id::into_super(Id::into_super(NSString::from_str(family)))
+                                );
+                            }
+                            if let Some(size) = node.font_size() {
+                                font_attrs.insert_id(
+                                    unsafe { NSAccessibilityFontSizeKey },
+                                    Id::into_super(Id::into_super(Id::into_super(NSNumber::new_f32(size))))
+                                );
+                            }
+                            if let Some(weight) = node.font_weight() {
+                                if weight >= 700.0 {
+                                    font_attrs.insert_id(
+                                        ns_string!("AXFontBold"),
+                                        Id::into_super(Id::into_super(Id::into_super(NSNumber::new_bool(true))))
+                                    );
+                                }
+                            }
+                            if node.is_italic() {
+                                font_attrs.insert_id(
+                                    ns_string!("AXFontItalic"),
+                                    Id::into_super(Id::into_super(Id::into_super(NSNumber::new_bool(true))))
+                                );
+                            }
+                            if !font_attrs.is_empty() {
+                                attrs.insert_id(
+                                    unsafe { NSAccessibilityFontTextAttribute },
+                                    Id::into_super(Id::into_super(Id::into_super(font_attrs)))
+                                );
+                            }
+                            if let Some(deco) = node.underline() {
+                                attrs.insert_id(
+                                    unsafe { NSAccessibilityUnderlineTextAttribute },
+                                    Id::into_super(Id::into_super(Id::into_super(NSNumber::new_bool(true))))
+                                );
+                                attrs.insert_id(
+                                    unsafe { NSAccessibilityUnderlineColorTextAttribute },
+                                    to_color_attribute(deco.color)
+                                );
+                            }
+                            if let Some(deco) = node.strikethrough() {
+                                attrs.insert_id(
+                                    unsafe { NSAccessibilityStrikethroughTextAttribute },
+                                    Id::into_super(Id::into_super(Id::into_super(NSNumber::new_bool(true))))
+                                );
+                                attrs.insert_id(
+                                    unsafe { NSAccessibilityStrikethroughColorTextAttribute },
+                                    to_color_attribute(deco.color)
+                                );
+                            }
+                            if let Some(language) = node.language() {
+                                attrs.insert_id(
+                                    unsafe { NSAccessibilityLanguageTextAttribute },
+                                    Id::into_super(Id::into_super(NSString::from_str(language)))
+                                );
+                            }
+                            if let Some(align) = node.text_align() {
+                                let ns_align = match align {
+                                    TextAlign::Left => NSTextAlignment::Left,
+                                    TextAlign::Center => NSTextAlignment::Center,
+                                    TextAlign::Right => NSTextAlignment::Right,
+                                    TextAlign::Justify => NSTextAlignment::Justified,
+                                };
+                                attrs.insert_id(
+                                    unsafe { NSAccessibilityTextAlignmentAttribute },
+                                    Id::into_super(Id::into_super(Id::into_super(NSNumber::new_isize(ns_align.0))))
+                                );
+                            }
+                            let part = unsafe { NSAttributedString::new_with_attributes(&ns_text, &attrs) };
+                            unsafe { result.appendAttributedString(&part) };
+                            None
+                        });
+                        unsafe { result.endEditing() };
+                        return Some(Id::into_super(result));
+                    }
+                }
+                None
+            })
+            .flatten()
+        }
+
         #[method(accessibilityFrameForRange:)]
         fn frame_for_range(&self, range: NSRange) -> NSRect {
-            self.resolve_with_context(|node, context| {
+            self.resolve_with_context(|node, _, context| {
                 let view = match context.view.load() {
                     Some(view) => view,
                     None => {
@@ -728,15 +983,221 @@ declare_class!(
             .unwrap_or_else(|| NSRange::new(0, 0))
         }
 
+        #[method(accessibilityStyleRangeForIndex:)]
+        fn style_range_for_index(&self, index: NSInteger) -> NSRange {
+            self.resolve(|node| {
+                if node.supports_text_ranges() && index >= 0 {
+                    if let Some(pos) = node.text_position_from_global_utf16_index(index as _) {
+                        let start = if pos.is_format_start() {
+                            pos
+                        } else {
+                            pos.backward_to_format_start()
+                        };
+                        let mut range = start.to_degenerate_range();
+                        range.set_end(pos.forward_to_format_end());
+                        return to_ns_range(&range);
+                    }
+                }
+                NSRange::new(0, 0)
+            })
+            .unwrap_or_else(|| NSRange::new(0, 0))
+        }
+
         #[method(setAccessibilitySelectedTextRange:)]
         fn set_selected_text_range(&self, range: NSRange) {
-            self.resolve_with_context(|node, context| {
+            self.resolve_with_context(|node, tree, context| {
                 if node.supports_text_ranges() {
                     if let Some(range) = from_ns_range(node, range) {
+                        if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                            context.do_action(ActionRequest {
+                                action: Action::SetTextSelection,
+                                target_tree,
+                                target_node,
+                                data: Some(ActionData::SetTextSelection(range.to_text_selection())),
+                            });
+                        }
+                    }
+                }
+            });
+        }
+
+        #[method(isAccessibilityRequired)]
+        fn is_required(&self) -> bool {
+            self.resolve(|node| node.is_required())
+                .unwrap_or(false)
+        }
+
+        #[method(isAccessibilitySelected)]
+        fn is_selected(&self) -> bool {
+            self.resolve(|node| {
+                let wrapper = NodeWrapper(node);
+                wrapper.is_item_like()
+                    && node.is_selectable()
+                    && node.is_selected().unwrap_or(false)
+            })
+            .unwrap_or(false)
+        }
+
+        #[method(setAccessibilitySelected:)]
+        fn set_selected(&self, selected: bool) {
+            self.resolve_with_context(|node, tree, context| {
+                let wrapper = NodeWrapper(node);
+                if !node.is_clickable(&filter)
+                    || !wrapper.is_item_like()
+                    || !node.is_selectable()
+                {
+                    return;
+                }
+                if node.is_selected() == Some(selected) {
+                    return;
+                }
+                if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                    context.do_action(ActionRequest {
+                        action: Action::Click,
+                        target_tree,
+                        target_node,
+                        data: None,
+                    });
+                }
+            });
+        }
+
+        #[method_id(accessibilityAttributeValue:)]
+        fn accessibility_attribute_value(&self, attr: &NSString) -> Option<Id<NSString>> {
+            self.resolve(|node| {
+                if attr == ns_string!("AXBrailleLabel") && node.has_braille_label() {
+                    return Some(NSString::from_str(node.braille_label().unwrap()))
+                } else if attr == ns_string!("AXBrailleRoleDescription") && node.has_braille_role_description() {
+                    return Some(NSString::from_str(node.braille_role_description().unwrap()))
+                }
+
+                None
+            })
+            .flatten()
+        }
+
+        #[method_id(accessibilityRows)]
+        fn rows(&self) -> Option<Id<NSArray<PlatformNode>>> {
+            self.resolve_with_context(|node, _, context| {
+                let wrapper = NodeWrapper(node);
+                if !wrapper.is_container_with_selectable_children() {
+                    return None;
+                }
+                let platform_nodes = node
+                    .items(filter)
+                    .map(|child| context.get_or_create_platform_node(child.id()))
+                    .collect::<Vec<Id<PlatformNode>>>();
+                Some(NSArray::from_vec(platform_nodes))
+            })
+            .flatten()
+        }
+
+        #[method_id(accessibilitySelectedRows)]
+        fn selected_rows(&self) -> Option<Id<NSArray<PlatformNode>>> {
+            self.resolve_with_context(|node, _, context| {
+                let wrapper = NodeWrapper(node);
+                if !wrapper.is_container_with_selectable_children() {
+                    return None;
+                }
+                let platform_nodes = node
+                    .items(filter)
+                    .filter(|item| item.is_selected() == Some(true))
+                    .map(|child| context.get_or_create_platform_node(child.id()))
+                    .collect::<Vec<Id<PlatformNode>>>();
+                Some(NSArray::from_vec(platform_nodes))
+            })
+            .flatten()
+        }
+
+        #[method(accessibilityPerformPick)]
+        fn pick(&self) -> bool {
+            self.resolve_with_context(|node, tree, context| {
+                let wrapper = NodeWrapper(node);
+                let selectable = node.is_clickable(&filter)
+                    && wrapper.is_item_like()
+                    && node.is_selectable();
+                if selectable {
+                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
                         context.do_action(ActionRequest {
-                            action: Action::SetTextSelection,
-                            target: node.id(),
-                            data: Some(ActionData::SetTextSelection(range.to_text_selection())),
+                            action: Action::Click,
+                            target_tree,
+                            target_node,
+                            data: None,
+                        });
+                    }
+                }
+                selectable
+            })
+            .unwrap_or(false)
+        }
+
+        #[method_id(accessibilityLinkedUIElements)]
+        fn linked_ui_elements(&self) -> Option<Id<NSArray<PlatformNode>>> {
+            self.resolve_with_context(|node, _, context| {
+                let platform_nodes: Vec<Id<PlatformNode>> = node
+                    .controls()
+                    .filter(|controlled| filter(controlled) == FilterResult::Include)
+                    .map(|controlled| context.get_or_create_platform_node(controlled.id()))
+                    .collect();
+                if platform_nodes.is_empty() {
+                    None
+                } else {
+                    Some(NSArray::from_vec(platform_nodes))
+                }
+            })
+            .flatten()
+        }
+
+        #[method_id(accessibilityTabs)]
+        fn tabs(&self) -> Option<Id<NSArray<PlatformNode>>> {
+            self.resolve_with_context(|node, _, context| {
+                if node.role() != Role::TabList {
+                    return None;
+                }
+                let platform_nodes = node
+                    .filtered_children(filter)
+                    .filter(|child| child.role() == Role::Tab)
+                    .map(|tab| context.get_or_create_platform_node(tab.id()))
+                    .collect::<Vec<Id<PlatformNode>>>();
+                Some(NSArray::from_vec(platform_nodes))
+            })
+            .flatten()
+        }
+
+        #[method(isAccessibilityModal)]
+        fn is_modal(&self) -> bool {
+            self.resolve(|node| node.is_modal())
+                .unwrap_or(false)
+        }
+
+        // We discovered through experimentation that when mixing the newer
+        // NSAccessibility protocols with the older informal protocol,
+        // the platform uses both protocols to discover which actions are
+        // available and then perform actions. That means our implementation
+        // of the legacy methods below only needs to cover actions not already
+        // handled by the newer methods.
+
+        #[method_id(accessibilityActionNames)]
+        fn action_names(&self) -> Id<NSArray<NSString>> {
+            let mut result = vec![];
+            self.resolve(|node| {
+                if node.supports_action(Action::ScrollIntoView, &filter) {
+                    result.push(ns_string!(SCROLL_TO_VISIBLE_ACTION).copy());
+                }
+            });
+            NSArray::from_vec(result)
+        }
+
+        #[method(accessibilityPerformAction:)]
+        fn perform_action(&self, action: &NSString) {
+            self.resolve_with_context(|node, tree, context| {
+                if action == ns_string!(SCROLL_TO_VISIBLE_ACTION) {
+                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+                        context.do_action(ActionRequest {
+                            action: Action::ScrollIntoView,
+                            target_tree,
+                            target_node,
+                            data: None,
                         });
                     }
                 }
@@ -747,16 +1208,16 @@ declare_class!(
         fn is_selector_allowed(&self, selector: Sel) -> bool {
             self.resolve(|node| {
                 if selector == sel!(setAccessibilityFocused:) {
-                    return node.is_focusable();
+                    return node.is_focusable(&filter);
                 }
                 if selector == sel!(accessibilityPerformPress) {
-                    return node.is_clickable();
+                    return node.is_clickable(&filter);
                 }
                 if selector == sel!(accessibilityPerformIncrement) {
-                    return node.supports_increment();
+                    return node.supports_increment(&filter);
                 }
                 if selector == sel!(accessibilityPerformDecrement) {
-                    return node.supports_decrement();
+                    return node.supports_decrement(&filter);
                 }
                 if selector == sel!(accessibilityNumberOfCharacters)
                     || selector == sel!(accessibilitySelectedText)
@@ -765,25 +1226,59 @@ declare_class!(
                     || selector == sel!(accessibilityRangeForLine:)
                     || selector == sel!(accessibilityRangeForPosition:)
                     || selector == sel!(accessibilityStringForRange:)
+                    || selector == sel!(accessibilityAttributedStringForRange:)
                     || selector == sel!(accessibilityFrameForRange:)
                     || selector == sel!(accessibilityLineForIndex:)
                     || selector == sel!(accessibilityRangeForIndex:)
+                    || selector == sel!(accessibilityStyleRangeForIndex:)
                     || selector == sel!(setAccessibilitySelectedTextRange:)
                 {
                     return node.supports_text_ranges();
                 }
                 if selector == sel!(setAccessibilityValue:) {
-                    // Our implementation of this currently does nothing,
-                    // and it's not clear if VoiceOver ever actually uses it,
-                    // but it must be allowed for editable text in order to get
-                    // the expected VoiceOver behavior.
-                    return node.supports_text_ranges() && !node.is_read_only();
+                    return (node.supports_text_ranges() && !node.is_read_only()) || node.supports_action(Action::SetValue, &filter);
+                }
+                if selector == sel!(isAccessibilitySelected) {
+                    let wrapper = NodeWrapper(node);
+                    return wrapper.is_item_like();
+                }
+                if selector == sel!(accessibilityRows)
+                    || selector == sel!(accessibilitySelectedRows)
+                {
+                    let wrapper = NodeWrapper(node);
+                    return wrapper.is_container_with_selectable_children()
+                }
+                if selector == sel!(setAccessibilitySelected:)
+                    || selector == sel!(accessibilityPerformPick)
+                {
+                    let wrapper = NodeWrapper(node);
+                    return node.is_clickable(&filter)
+                        && wrapper.is_item_like()
+                        && node.is_selectable();
+                }
+                if selector == sel!(accessibilityTabs) {
+                    return node.role() == Role::TabList;
+                }
+                if selector == sel!(isAccessibilityModal) {
+                    return node.is_dialog();
+                }
+                if selector == sel!(accessibilityAttributeValue:) {
+                    return node.has_braille_label() || node.has_braille_role_description()
+                }
+                if selector == sel!(accessibilityURL) {
+                    return node.supports_url();
                 }
                 selector == sel!(accessibilityParent)
                     || selector == sel!(accessibilityChildren)
                     || selector == sel!(accessibilityChildrenInNavigationOrder)
+                    || selector == sel!(accessibilitySelectedChildren)
                     || selector == sel!(accessibilityFrame)
                     || selector == sel!(accessibilityRole)
+                    || selector == sel!(accessibilitySubrole)
+                    || selector == sel!(isAccessibilityEnabled)
+                    || selector == sel!(accessibilityWindow)
+                    || selector == sel!(accessibilityTopLevelUIElement)
+                    || selector == sel!(accessibilityLinkedUIElements)
                     || selector == sel!(accessibilityRoleDescription)
                     || selector == sel!(accessibilityIdentifier)
                     || selector == sel!(accessibilityTitle)
@@ -792,11 +1287,14 @@ declare_class!(
                     || selector == sel!(accessibilityValue)
                     || selector == sel!(accessibilityMinValue)
                     || selector == sel!(accessibilityMaxValue)
+                    || selector == sel!(isAccessibilityRequired)
                     || selector == sel!(accessibilityOrientation)
                     || selector == sel!(isAccessibilityElement)
                     || selector == sel!(isAccessibilityFocused)
                     || selector == sel!(accessibilityNotifiesWhenDestroyed)
                     || selector == sel!(isAccessibilitySelectorAllowed:)
+                    || selector == sel!(accessibilityActionNames)
+                    || selector == sel!(accessibilityPerformAction:)
             })
             .unwrap_or(false)
         }
@@ -812,24 +1310,24 @@ impl PlatformNode {
 
     fn resolve_with_context<F, T>(&self, f: F) -> Option<T>
     where
-        F: FnOnce(&Node, &Rc<Context>) -> T,
+        F: FnOnce(&Node, &Tree, &Rc<Context>) -> T,
     {
         let context = self.ivars().context.upgrade()?;
         let tree = context.tree.borrow();
         let state = tree.state();
         let node = state.node_by_id(self.ivars().node_id)?;
-        Some(f(&node, &context))
+        Some(f(&node, &tree, &context))
     }
 
     fn resolve<F, T>(&self, f: F) -> Option<T>
     where
         F: FnOnce(&Node) -> T,
     {
-        self.resolve_with_context(|node, _| f(node))
+        self.resolve_with_context(|node, _, _| f(node))
     }
 
     fn children_internal(&self) -> Option<Id<NSArray<PlatformNode>>> {
-        self.resolve_with_context(|node, context| {
+        self.resolve_with_context(|node, _, context| {
             let platform_nodes = node
                 .filtered_children(filter)
                 .map(|child| context.get_or_create_platform_node(child.id()))

@@ -22,6 +22,8 @@ use windows::{
     },
 };
 
+use crate::window_handle::WindowHandle;
+
 use super::{
     context::{ActionHandlerNoMut, ActionHandlerWrapper},
     Adapter,
@@ -43,7 +45,7 @@ static WINDOW_CLASS_ATOM: Lazy<u16> = Lazy::new(|| {
 
     let atom = unsafe { RegisterClassW(&wc) };
     if atom == 0 {
-        panic!("{}", Error::from_win32());
+        panic!("{}", Error::from_thread());
     }
     atom
 });
@@ -89,7 +91,7 @@ extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: L
             unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
         WM_PAINT => {
-            unsafe { ValidateRect(window, None) }.unwrap();
+            unsafe { ValidateRect(Some(window), None) }.unwrap();
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -140,6 +142,7 @@ fn create_window(
         activation_handler: Box::new(activation_handler),
         action_handler: Arc::new(ActionHandlerWrapper::new(action_handler)),
     });
+    let module = HINSTANCE::from(unsafe { GetModuleHandleW(None)? });
 
     let window = unsafe {
         CreateWindowExW(
@@ -153,12 +156,12 @@ fn create_window(
             CW_USEDEFAULT,
             None,
             None,
-            GetModuleHandleW(None).unwrap(),
+            Some(module),
             Some(Box::into_raw(create_params) as _),
-        )
+        )?
     };
-    if window.0 == 0 {
-        return Err(Error::from_win32());
+    if window.is_invalid() {
+        return Err(Error::from_thread());
     }
 
     Ok(window)
@@ -166,18 +169,20 @@ fn create_window(
 
 pub(crate) struct Scope {
     pub(crate) uia: IUIAutomation,
-    pub(crate) window: HWND,
+    pub(crate) window: WindowHandle,
 }
 
 impl Scope {
     pub(crate) fn show_and_focus_window(&self) {
-        unsafe { ShowWindow(self.window, SW_SHOW) };
-        unsafe { SetForegroundWindow(self.window) };
+        let _ = unsafe { ShowWindow(self.window.0, SW_SHOW) };
+        let _ = unsafe { SetForegroundWindow(self.window.0) };
     }
 }
 
 // It's not safe to run these UI-related tests concurrently.
-pub(crate) static MUTEX: Mutex<()> = Mutex::new(());
+// We need a non-poisoning mutex here because the subclassing adapter's
+// double-instantiation test intentionally panics.
+pub(crate) static MUTEX: parking_lot::Mutex<()> = parking_lot::const_mutex(());
 
 pub(crate) fn scope<F>(
     window_title: &str,
@@ -188,9 +193,9 @@ pub(crate) fn scope<F>(
 where
     F: FnOnce(&Scope) -> Result<()>,
 {
-    let _lock_guard = MUTEX.lock().unwrap();
+    let _lock_guard = MUTEX.lock();
 
-    let window_mutex: Mutex<Option<HWND>> = Mutex::new(None);
+    let window_mutex: Mutex<Option<WindowHandle>> = Mutex::new(None);
     let window_cv = Condvar::new();
 
     thread::scope(|thread_scope| {
@@ -206,13 +211,13 @@ where
 
             {
                 let mut state = window_mutex.lock().unwrap();
-                *state = Some(window);
+                *state = Some(window.into());
                 window_cv.notify_one();
             }
 
             let mut message = MSG::default();
-            while unsafe { GetMessageW(&mut message, HWND(0), 0, 0) }.into() {
-                unsafe { TranslateMessage(&message) };
+            while unsafe { GetMessageW(&mut message, None, 0, 0) }.into() {
+                let _ = unsafe { TranslateMessage(&message) };
                 unsafe { DispatchMessageW(&message) };
             }
         });
@@ -228,7 +233,7 @@ where
         };
 
         let _window_guard = scopeguard::guard((), |_| {
-            unsafe { PostMessageW(window, WM_CLOSE, WPARAM(0), LPARAM(0)) }.unwrap()
+            unsafe { PostMessageW(Some(window.0), WM_CLOSE, WPARAM(0), LPARAM(0)) }.unwrap()
         });
 
         // We must initialize COM before creating the UIA client. The MTA option
@@ -323,8 +328,8 @@ impl FocusEventHandler {
 }
 
 #[allow(non_snake_case)]
-impl IUIAutomationFocusChangedEventHandler_Impl for FocusEventHandler {
-    fn HandleFocusChangedEvent(&self, sender: Option<&IUIAutomationElement>) -> Result<()> {
+impl IUIAutomationFocusChangedEventHandler_Impl for FocusEventHandler_Impl {
+    fn HandleFocusChangedEvent(&self, sender: Ref<IUIAutomationElement>) -> Result<()> {
         self.received.put(sender.unwrap().clone());
         Ok(())
     }

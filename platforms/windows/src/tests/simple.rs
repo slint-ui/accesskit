@@ -4,7 +4,7 @@
 // the LICENSE-MIT file), at your option.
 
 use accesskit::{
-    Action, ActionHandler, ActionRequest, ActivationHandler, Node, NodeBuilder, NodeId, Role, Tree,
+    Action, ActionHandler, ActionRequest, ActivationHandler, Node, NodeId, Role, Tree, TreeId,
     TreeUpdate,
 };
 use windows::{core::*, Win32::UI::Accessibility::*};
@@ -17,19 +17,16 @@ const WINDOW_ID: NodeId = NodeId(0);
 const BUTTON_1_ID: NodeId = NodeId(1);
 const BUTTON_2_ID: NodeId = NodeId(2);
 
-fn make_button(name: &str) -> Node {
-    let mut builder = NodeBuilder::new(Role::Button);
-    builder.set_name(name);
-    builder.add_action(Action::Focus);
-    builder.build()
+fn make_button(label: &str) -> Node {
+    let mut node = Node::new(Role::Button);
+    node.set_label(label);
+    node.add_action(Action::Focus);
+    node
 }
 
 fn get_initial_state() -> TreeUpdate {
-    let root = {
-        let mut builder = NodeBuilder::new(Role::Window);
-        builder.set_children(vec![BUTTON_1_ID, BUTTON_2_ID]);
-        builder.build()
-    };
+    let mut root = Node::new(Role::Window);
+    root.set_children(vec![BUTTON_1_ID, BUTTON_2_ID]);
     let button_1 = make_button("Button 1");
     let button_2 = make_button("Button 2");
     TreeUpdate {
@@ -39,6 +36,7 @@ fn get_initial_state() -> TreeUpdate {
             (BUTTON_2_ID, button_2),
         ],
         tree: Some(Tree::new(WINDOW_ID)),
+        tree_id: TreeId::ROOT,
         focus: BUTTON_1_ID,
     }
 }
@@ -72,7 +70,7 @@ where
 #[test]
 fn has_native_uia() -> Result<()> {
     scope(|s| {
-        let has_native_uia: bool = unsafe { UiaHasServerSideProvider(s.window) }.into();
+        let has_native_uia: bool = unsafe { UiaHasServerSideProvider(s.window.0) }.into();
         assert!(has_native_uia);
         Ok(())
     })
@@ -96,7 +94,7 @@ fn is_button_2(element: &IUIAutomationElement) -> bool {
 #[test]
 fn navigation() -> Result<()> {
     scope(|s| {
-        let root = unsafe { s.uia.ElementFromHandle(s.window) }?;
+        let root = unsafe { s.uia.ElementFromHandle(s.window.0) }?;
         let walker = unsafe { s.uia.ControlViewWalker() }?;
 
         // The children of the window include the children that we provide,

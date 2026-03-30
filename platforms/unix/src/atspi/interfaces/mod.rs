@@ -7,24 +7,25 @@ mod accessible;
 mod action;
 mod application;
 mod component;
+mod hyperlink;
+mod selection;
 mod text;
 mod value;
 
 use crate::atspi::{ObjectId, OwnedObjectAddress};
-use zbus::{fdo, names::OwnedUniqueName};
+use zbus::{fdo, names::UniqueName};
 
 fn map_root_error(error: accesskit_atspi_common::Error) -> fdo::Error {
     crate::util::map_error(ObjectId::Root, error)
 }
 
 fn optional_object_address(
-    bus_name: &OwnedUniqueName,
+    bus_name: &UniqueName,
     object_id: Option<ObjectId>,
 ) -> (OwnedObjectAddress,) {
-    let bus_name = bus_name.clone();
     match object_id {
         Some(id) => (id.to_address(bus_name),),
-        None => (OwnedObjectAddress::null(bus_name),),
+        None => (OwnedObjectAddress::null(),),
     }
 }
 
@@ -32,5 +33,7 @@ pub(crate) use accessible::*;
 pub(crate) use action::*;
 pub(crate) use application::*;
 pub(crate) use component::*;
+pub(crate) use hyperlink::*;
+pub(crate) use selection::*;
 pub(crate) use text::*;
 pub(crate) use value::*;

@@ -3,16 +3,6 @@
 // the LICENSE-APACHE file) or the MIT license (found in
 // the LICENSE-MIT file), at your option.
 
-use accesskit::{
-    ActionHandler, ActionRequest, ActivationHandler, NodeBuilder, NodeId, Role, Tree as TreeData,
-    TreeUpdate,
-};
-use accesskit_consumer::{FilterResult, Tree};
-use objc2::rc::{Id, WeakId};
-use objc2_app_kit::NSView;
-use objc2_foundation::{MainThreadMarker, NSArray, NSObject, NSPoint};
-use std::{ffi::c_void, ptr::null_mut, rc::Rc};
-
 use crate::{
     context::{ActionHandlerNoMut, ActionHandlerWrapper, Context},
     event::{focus_event, EventGenerator, QueuedEvents},
@@ -20,8 +10,18 @@ use crate::{
     node::can_be_focused,
     util::*,
 };
+use accesskit::{
+    ActionHandler, ActionRequest, ActivationHandler, Node as NodeProvider, NodeId as LocalNodeId,
+    Role, Tree as TreeData, TreeId, TreeUpdate,
+};
+use accesskit_consumer::{FilterResult, Tree};
+use objc2::rc::{Id, WeakId};
+use objc2_app_kit::NSView;
+use objc2_foundation::{MainThreadMarker, NSArray, NSObject, NSPoint};
+use std::fmt::{Debug, Formatter};
+use std::{ffi::c_void, ptr::null_mut, rc::Rc};
 
-const PLACEHOLDER_ROOT_ID: NodeId = NodeId(0);
+const PLACEHOLDER_ROOT_ID: LocalNodeId = LocalNodeId(0);
 
 enum State {
     Inactive {
@@ -38,12 +38,41 @@ enum State {
     Active(Rc<Context>),
 }
 
+impl Debug for State {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            State::Inactive {
+                view,
+                is_view_focused,
+                action_handler: _,
+                mtm,
+            } => f
+                .debug_struct("Inactive")
+                .field("view", view)
+                .field("is_view_focused", is_view_focused)
+                .field("mtm", mtm)
+                .finish(),
+            State::Placeholder {
+                placeholder_context,
+                is_view_focused,
+                action_handler: _,
+            } => f
+                .debug_struct("Placeholder")
+                .field("placeholder_context", placeholder_context)
+                .field("is_view_focused", is_view_focused)
+                .finish(),
+            State::Active(context) => f.debug_struct("Active").field("context", context).finish(),
+        }
+    }
+}
+
 struct PlaceholderActionHandler;
 
 impl ActionHandler for PlaceholderActionHandler {
     fn do_action(&mut self, _request: ActionRequest) {}
 }
 
+#[derive(Debug)]
 pub struct Adapter {
     state: State,
 }
@@ -100,12 +129,9 @@ impl Adapter {
                     Rc::clone(action_handler),
                     placeholder_context.mtm,
                 );
-                let result = context
-                    .tree
-                    .borrow()
-                    .state()
-                    .focus_id()
-                    .map(|id| QueuedEvents::new(Rc::clone(&context), vec![focus_event(id)]));
+                let result = context.tree.borrow().state().focus().map(|node| {
+                    QueuedEvents::new(Rc::clone(&context), vec![focus_event(node.id())])
+                });
                 self.state = State::Active(context);
                 result
             }
@@ -165,8 +191,9 @@ impl Adapter {
                 }
                 None => {
                     let placeholder_update = TreeUpdate {
-                        nodes: vec![(PLACEHOLDER_ROOT_ID, NodeBuilder::new(Role::Window).build())],
+                        nodes: vec![(PLACEHOLDER_ROOT_ID, NodeProvider::new(Role::Window))],
                         tree: Some(TreeData::new(PLACEHOLDER_ROOT_ID)),
+                        tree_id: TreeId::ROOT,
                         focus: PLACEHOLDER_ROOT_ID,
                     };
                     let placeholder_tree = Tree::new(placeholder_update, false);

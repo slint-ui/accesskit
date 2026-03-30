@@ -3,14 +3,19 @@
 // the LICENSE-APACHE file) or the MIT license (found in
 // the LICENSE-MIT file), at your option.
 
-use accesskit::{Live, NodeId, Role};
-use accesskit_consumer::{FilterResult, Node, TreeChangeHandler};
+use accesskit::{Live, Role};
+use accesskit_consumer::{FilterResult, Node, NodeId, TreeChangeHandler};
+use hashbrown::HashSet;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_app_kit::*;
 use objc2_foundation::{NSMutableDictionary, NSNumber, NSString};
-use std::{collections::HashSet, rc::Rc};
+use std::{collections::VecDeque, rc::Rc};
 
-use crate::{context::Context, filters::filter, node::NodeWrapper};
+use crate::{
+    context::Context,
+    filters::filter,
+    node::{NodeWrapper, Value},
+};
 
 // This type is designed to be safe to create on a non-main thread
 // and send to the main thread. This ability isn't yet used though.
@@ -29,7 +34,7 @@ pub(crate) enum QueuedEvent {
 impl QueuedEvent {
     fn live_region_announcement(node: &Node) -> Self {
         Self::Announcement {
-            text: node.name().unwrap(),
+            text: node.value().unwrap(),
             priority: if node.live() == Live::Assertive {
                 NSAccessibilityPriorityLevel::NSAccessibilityPriorityHigh
             } else {
@@ -136,6 +141,7 @@ pub(crate) struct EventGenerator {
     context: Rc<Context>,
     events: Vec<QueuedEvent>,
     text_changed: HashSet<NodeId>,
+    selected_rows_changed: HashSet<NodeId>,
 }
 
 impl EventGenerator {
@@ -144,11 +150,25 @@ impl EventGenerator {
             context,
             events: Vec::new(),
             text_changed: HashSet::new(),
+            selected_rows_changed: HashSet::new(),
         }
     }
 
     pub(crate) fn into_result(self) -> QueuedEvents {
         QueuedEvents::new(self.context, self.events)
+    }
+
+    fn remove_subtree(&mut self, node: &Node) {
+        let mut to_remove = VecDeque::new();
+        to_remove.push_back(*node);
+
+        while let Some(node) = to_remove.pop_front() {
+            for child in node.filtered_children(&filter) {
+                to_remove.push_back(child);
+            }
+
+            self.events.push(QueuedEvent::NodeDestroyed(node.id()));
+        }
     }
 
     fn insert_text_change_if_needed_parent(&mut self, node: Node) {
@@ -173,11 +193,33 @@ impl EventGenerator {
     }
 
     fn insert_text_change_if_needed(&mut self, node: &Node) {
-        if node.role() != Role::InlineTextBox {
+        if node.role() != Role::TextRun {
             return;
         }
         if let Some(node) = node.filtered_parent(&filter) {
             self.insert_text_change_if_needed_parent(node);
+        }
+    }
+
+    fn enqueue_selected_rows_change_if_needed_parent(&mut self, node: Node) {
+        let id = node.id();
+        if self.selected_rows_changed.contains(&id) {
+            return;
+        }
+        self.events.push(QueuedEvent::Generic {
+            node_id: id,
+            notification: unsafe { NSAccessibilitySelectedRowsChangedNotification },
+        });
+        self.selected_rows_changed.insert(id);
+    }
+
+    fn enqueue_selected_rows_change_if_needed(&mut self, node: &Node) {
+        let wrapper = NodeWrapper(node);
+        if !wrapper.is_item_like() {
+            return;
+        }
+        if let Some(node) = node.selection_container(&filter) {
+            self.enqueue_selected_rows_change_if_needed_parent(node);
         }
     }
 }
@@ -188,7 +230,10 @@ impl TreeChangeHandler for EventGenerator {
         if filter(node) != FilterResult::Include {
             return;
         }
-        if node.name().is_some() && node.live() != Live::Off {
+        if let Some(true) = node.is_selected() {
+            self.enqueue_selected_rows_change_if_needed(node);
+        }
+        if node.value().is_some() && node.live() != Live::Off {
             self.events
                 .push(QueuedEvent::live_region_announcement(node));
         }
@@ -198,7 +243,17 @@ impl TreeChangeHandler for EventGenerator {
         if old_node.raw_value() != new_node.raw_value() {
             self.insert_text_change_if_needed(new_node);
         }
-        if filter(new_node) != FilterResult::Include {
+        let old_filter_result = filter(old_node);
+        let new_filter_result = filter(new_node);
+        if new_filter_result != FilterResult::Include {
+            if old_filter_result == FilterResult::Include && old_node.is_selected() == Some(true) {
+                self.enqueue_selected_rows_change_if_needed(old_node);
+            }
+            if new_filter_result == FilterResult::ExcludeSubtree {
+                self.remove_subtree(old_node);
+            } else {
+                self.events.push(QueuedEvent::NodeDestroyed(new_node.id()));
+            }
             return;
         }
         let node_id = new_node.id();
@@ -210,11 +265,26 @@ impl TreeChangeHandler for EventGenerator {
                 notification: unsafe { NSAccessibilityTitleChangedNotification },
             });
         }
-        if old_wrapper.value() != new_wrapper.value() {
-            self.events.push(QueuedEvent::Generic {
-                node_id,
-                notification: unsafe { NSAccessibilityValueChangedNotification },
-            });
+        let new_value = new_wrapper.value();
+        if old_wrapper.value() != new_value {
+            if !new_node.is_focused() && new_value.is_some_and(|v| matches!(v, Value::Bool(_))) {
+                // Bool value changed event for the focused node must come last
+                // in order for VoiceOver to announce it. Otherwise, if we raise
+                // bool value changed events for other nodes after this one, VoiceOver
+                // will announce them instead.
+                self.events.insert(
+                    0,
+                    QueuedEvent::Generic {
+                        node_id,
+                        notification: unsafe { NSAccessibilityValueChangedNotification },
+                    },
+                );
+            } else {
+                self.events.push(QueuedEvent::Generic {
+                    node_id,
+                    notification: unsafe { NSAccessibilityValueChangedNotification },
+                });
+            }
         }
         if old_wrapper.supports_text_ranges()
             && new_wrapper.supports_text_ranges()
@@ -225,14 +295,19 @@ impl TreeChangeHandler for EventGenerator {
                 notification: unsafe { NSAccessibilitySelectedTextChangedNotification },
             });
         }
-        if new_node.name().is_some()
+        if new_node.value().is_some()
             && new_node.live() != Live::Off
-            && (new_node.name() != old_node.name()
+            && (new_node.value() != old_node.value()
                 || new_node.live() != old_node.live()
-                || filter(old_node) != FilterResult::Include)
+                || old_filter_result != FilterResult::Include)
         {
             self.events
                 .push(QueuedEvent::live_region_announcement(new_node));
+        }
+        if new_node.is_selected() != old_node.is_selected()
+            || (old_filter_result != FilterResult::Include && new_node.is_selected() == Some(true))
+        {
+            self.enqueue_selected_rows_change_if_needed(new_node);
         }
     }
 
@@ -247,6 +322,9 @@ impl TreeChangeHandler for EventGenerator {
 
     fn node_removed(&mut self, node: &Node) {
         self.insert_text_change_if_needed(node);
+        if let Some(true) = node.is_selected() {
+            self.enqueue_selected_rows_change_if_needed(node);
+        }
         self.events.push(QueuedEvent::NodeDestroyed(node.id()));
     }
 }

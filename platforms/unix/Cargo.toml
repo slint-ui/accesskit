@@ -1,6 +1,6 @@
 [package]
 name = "accesskit_unix"
-version = "0.12.0"
+version = "0.21.0"
 authors.workspace = true
 license.workspace = true
 description = "AccessKit UI accessibility infrastructure: Linux adapter"
@@ -13,16 +13,16 @@ rust-version.workspace = true
 
 [features]
 default = ["async-io"]
-async-io = ["dep:async-channel", "dep:async-executor", "dep:async-task", "dep:futures-util", "atspi/async-std", "zbus/async-io"]
-tokio = ["dep:tokio", "dep:tokio-stream", "atspi/tokio", "zbus/tokio"]
+async-io = ["dep:async-channel", "dep:async-executor", "dep:async-task", "dep:futures-util"]
+tokio = ["dep:tokio", "dep:tokio-stream"]
 
 [dependencies]
-accesskit = { version = "0.16.0", path = "../../common" }
-accesskit_atspi_common = { version = "0.9.0", path = "../atspi-common" }
-atspi = { version = "0.19", default-features = false }
-futures-lite = "1.13"
+accesskit = { version = "0.24.0", path = "../../common" }
+accesskit_atspi_common = { version = "0.18.0", path = "../atspi-common" }
+atspi = { version = "0.29", default-features = false, features = ["proxies"] }
+futures-lite = "2.3"
 serde = "1.0"
-zbus = { version = "3.14", default-features = false }
+zbus = { version = "5.5", default-features = false, features = ["async-io"] }
 
 # async-io support
 async-channel = { version = "2.1.1", optional = true }

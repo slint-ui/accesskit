@@ -8,30 +8,58 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE.chromium file.
 
-use std::{iter::FusedIterator, sync::Arc};
-
 use accesskit::{
-    Action, Affine, DefaultActionVerb, Live, Node as NodeData, NodeId, Orientation, Point, Rect,
-    Role, TextSelection, Toggled,
+    Action, Affine, AriaCurrent, HasPopup, Live, Node as NodeData, NodeId as LocalNodeId,
+    Orientation, Point, Rect, Role, SortDirection, TextSelection, Toggled, TreeId,
 };
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+use core::{fmt, iter::FusedIterator};
 
 use crate::filters::FilterResult;
 use crate::iterators::{
-    FilteredChildren, FollowingFilteredSiblings, FollowingSiblings, LabelledBy,
+    ChildIds, FilteredChildren, FollowingFilteredSiblings, FollowingSiblings, LabelledBy,
     PrecedingFilteredSiblings, PrecedingSiblings,
 };
-use crate::tree::State as TreeState;
+use crate::tree::{State as TreeState, TreeIndex};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ParentAndIndex(pub(crate) NodeId, pub(crate) usize);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct NodeId(TreeIndex, LocalNodeId);
 
-#[derive(Clone)]
-pub(crate) struct NodeState {
-    pub(crate) parent_and_index: Option<ParentAndIndex>,
-    pub(crate) data: Arc<NodeData>,
+impl NodeId {
+    pub(crate) fn new(local_id: LocalNodeId, tree_index: TreeIndex) -> Self {
+        Self(tree_index, local_id)
+    }
+
+    pub(crate) fn with_same_tree(&self, local_id: LocalNodeId) -> Self {
+        Self(self.0, local_id)
+    }
+
+    pub(crate) fn to_components(self) -> (LocalNodeId, TreeIndex) {
+        (self.1, self.0)
+    }
 }
 
-#[derive(Copy, Clone)]
+impl From<NodeId> for u128 {
+    fn from(id: NodeId) -> Self {
+        let tree_index = id.0 .0 as u128;
+        let local_id = id.1 .0 as u128;
+        (local_id << 64) | tree_index
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct ParentAndIndex(pub(crate) NodeId, pub(crate) usize);
+
+#[derive(Clone, Debug)]
+pub(crate) struct NodeState {
+    pub(crate) parent_and_index: Option<ParentAndIndex>,
+    pub(crate) data: NodeData,
+}
+
+#[derive(Copy, Clone, Debug)]
 pub struct Node<'a> {
     pub tree_state: &'a TreeState,
     pub(crate) id: NodeId,
@@ -39,22 +67,45 @@ pub struct Node<'a> {
 }
 
 impl<'a> Node<'a> {
-    pub(crate) fn data(&self) -> &NodeData {
+    pub fn data(&self) -> &'a NodeData {
         &self.state.data
     }
 
     pub fn is_focused(&self) -> bool {
-        self.tree_state.focus_id() == Some(self.id())
+        let dominated_by_active_descendant = |node_id| {
+            self.tree_state
+                .node_by_id(node_id)
+                .and_then(|node| node.active_descendant())
+                .is_some()
+        };
+        match self.tree_state.focus_id() {
+            Some(focus_id) if focus_id == self.id() => !dominated_by_active_descendant(focus_id),
+            Some(focus_id) => self
+                .tree_state
+                .node_by_id(focus_id)
+                .and_then(|focused| focused.active_descendant())
+                .is_some_and(|active_descendant| active_descendant.id() == self.id()),
+            None => false,
+        }
     }
 
-    pub fn is_focusable(&self) -> bool {
-        self.supports_action(Action::Focus)
+    pub fn is_focused_in_tree(&self) -> bool {
+        self.tree_state.focus == self.id()
+    }
+
+    pub fn is_focusable(&self, parent_filter: &impl Fn(&Node) -> FilterResult) -> bool {
+        self.supports_action(Action::Focus, parent_filter) || self.is_focused_in_tree()
     }
 
     pub fn is_root(&self) -> bool {
         // Don't check for absence of a parent node, in case a non-root node
         // somehow gets detached from the tree.
         self.id() == self.tree_state.root_id()
+    }
+
+    /// Returns true if this node is a graft node (has a tree_id property set).
+    pub fn is_graft(&self) -> bool {
+        self.state.data.tree_id().is_some()
     }
 
     pub fn parent_id(&self) -> Option<NodeId> {
@@ -88,14 +139,28 @@ impl<'a> Node<'a> {
             })
     }
 
+    /// Returns the single child of a graft node (the subtree root), if available.
+    fn graft_child_id(&self) -> Option<NodeId> {
+        self.state
+            .data
+            .tree_id()
+            .and_then(|tree_id| self.tree_state.subtree_root(tree_id))
+    }
+
     pub fn child_ids(
         &self,
     ) -> impl DoubleEndedIterator<Item = NodeId>
            + ExactSizeIterator<Item = NodeId>
            + FusedIterator<Item = NodeId>
-           + '_ {
-        let data = &self.state.data;
-        data.children().iter().copied()
+           + 'a {
+        if self.is_graft() {
+            ChildIds::Graft(self.graft_child_id())
+        } else {
+            ChildIds::Normal {
+                parent_id: self.id,
+                children: self.state.data.children().iter(),
+            }
+        }
     }
 
     pub fn children(
@@ -105,10 +170,8 @@ impl<'a> Node<'a> {
            + FusedIterator<Item = Node<'a>>
            + 'a {
         let state = self.tree_state;
-        let data = &self.state.data;
-        data.children()
-            .iter()
-            .map(move |id| state.node_by_id(*id).unwrap())
+        self.child_ids()
+            .map(move |id| state.node_by_id(id).unwrap())
     }
 
     pub fn filtered_children(
@@ -314,20 +377,68 @@ impl<'a> Node<'a> {
         self.id
     }
 
+    pub fn locate(&self) -> (LocalNodeId, TreeId) {
+        self.tree_state.locate_node(self.id).unwrap()
+    }
+
     pub fn role(&self) -> Role {
         self.data().role()
     }
 
-    pub fn role_description(&self) -> Option<String> {
-        self.data().role_description().map(String::from)
+    pub fn role_description(&self) -> Option<&str> {
+        self.data().role_description()
     }
 
     pub fn has_role_description(&self) -> bool {
         self.data().role_description().is_some()
     }
 
+    pub fn is_live_atomic(&self) -> bool {
+        self.data().is_live_atomic()
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.data().is_busy()
+    }
+
+    pub fn column_index_text(&self) -> Option<&str> {
+        self.data().column_index_text()
+    }
+
+    pub fn row_index_text(&self) -> Option<&str> {
+        self.data().row_index_text()
+    }
+
+    pub fn braille_label(&self) -> Option<&str> {
+        self.data().braille_label()
+    }
+
+    pub fn has_braille_label(&self) -> bool {
+        self.data().braille_label().is_some()
+    }
+
+    pub fn braille_role_description(&self) -> Option<&str> {
+        self.data().braille_role_description()
+    }
+
+    pub fn has_braille_role_description(&self) -> bool {
+        self.data().braille_role_description().is_some()
+    }
+
+    pub fn aria_current(&self) -> Option<AriaCurrent> {
+        self.data().aria_current()
+    }
+
+    pub fn has_popup(&self) -> Option<HasPopup> {
+        self.data().has_popup()
+    }
+
     pub fn is_hidden(&self) -> bool {
-        self.data().is_hidden()
+        self.fetch_inherited_flag(NodeData::is_hidden)
+    }
+
+    pub fn level(&self) -> Option<usize> {
+        self.data().level()
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -371,6 +482,62 @@ impl<'a> Node<'a> {
         self.data().numeric_value_jump()
     }
 
+    pub fn clips_children(&self) -> bool {
+        self.data().clips_children()
+    }
+
+    pub fn scroll_x(&self) -> Option<f64> {
+        self.data().scroll_x()
+    }
+
+    pub fn scroll_x_min(&self) -> Option<f64> {
+        self.data().scroll_x_min()
+    }
+
+    pub fn scroll_x_max(&self) -> Option<f64> {
+        self.data().scroll_x_max()
+    }
+
+    pub fn scroll_y(&self) -> Option<f64> {
+        self.data().scroll_y()
+    }
+
+    pub fn scroll_y_min(&self) -> Option<f64> {
+        self.data().scroll_y_min()
+    }
+
+    pub fn scroll_y_max(&self) -> Option<f64> {
+        self.data().scroll_y_max()
+    }
+
+    pub(crate) fn fetch_inherited_property<T>(
+        &self,
+        getter: fn(&'a NodeData) -> Option<T>,
+    ) -> Option<T> {
+        let mut node = *self;
+        loop {
+            let value = getter(node.data());
+            if value.is_some() {
+                return value;
+            }
+            node = node.parent()?;
+        }
+    }
+
+    pub(crate) fn fetch_inherited_flag(&self, getter: fn(&'a NodeData) -> bool) -> bool {
+        let mut node = *self;
+        loop {
+            if getter(node.data()) {
+                return true;
+            }
+            if let Some(parent) = node.parent() {
+                node = parent;
+            } else {
+                return false;
+            }
+        }
+    }
+
     pub fn is_text_input(&self) -> bool {
         matches!(
             self.role(),
@@ -397,34 +564,73 @@ impl<'a> Node<'a> {
     }
 
     pub fn orientation(&self) -> Option<Orientation> {
-        self.data().orientation()
+        self.data().orientation().or_else(|| {
+            if self.role() == Role::ListBox {
+                Some(Orientation::Vertical)
+            } else if self.role() == Role::TabList {
+                Some(Orientation::Horizontal)
+            } else {
+                None
+            }
+        })
     }
 
-    pub fn default_action_verb(&self) -> Option<DefaultActionVerb> {
-        self.data().default_action_verb()
+    pub fn is_dialog(&self) -> bool {
+        matches!(self.role(), Role::AlertDialog | Role::Dialog)
+    }
+
+    pub fn is_modal(&self) -> bool {
+        self.data().is_modal()
     }
 
     // When probing for supported actions as the next several functions do,
     // it's tempting to check the role. But it's better to not assume anything
     // beyond what the provider has explicitly told us. Rationale:
-    // if the provider developer forgot to correctly set `default_action_verb`,
+    // if the provider developer forgot to call `add_action` for an action,
     // an AT (or even AccessKit itself) can fall back to simulating
     // a mouse click. But if the provider doesn't handle an action request
     // and we assume that it will based on the role, the attempted action
     // does nothing. This stance is a departure from Chromium.
 
-    pub fn is_clickable(&self) -> bool {
-        // If it has a custom default action verb except for
-        // `DefaultActionVerb::ClickAncestor`, it's definitely clickable.
-        // `DefaultActionVerb::ClickAncestor` is used when a node with a
-        // click listener is present in its ancestry chain.
-        if let Some(verb) = self.default_action_verb() {
-            if verb != DefaultActionVerb::ClickAncestor {
-                return true;
-            }
-        }
+    pub fn is_clickable(&self, parent_filter: &impl Fn(&Node) -> FilterResult) -> bool {
+        self.supports_action(Action::Click, parent_filter)
+    }
 
-        false
+    pub fn is_selectable(&self) -> bool {
+        // It's selectable if it has the attribute, whether it's true or false.
+        self.is_selected().is_some() && !self.is_disabled()
+    }
+
+    pub fn is_multiselectable(&self) -> bool {
+        self.data().is_multiselectable()
+    }
+
+    pub fn size_of_set_from_container(
+        &self,
+        filter: &impl Fn(&Node) -> FilterResult,
+    ) -> Option<usize> {
+        let mut parent = self.filtered_parent(filter);
+        while let Some(node) = parent {
+            if let Some(size_of_set) = node.size_of_set() {
+                return Some(size_of_set);
+            }
+            parent = node.filtered_parent(filter);
+        }
+        None
+    }
+
+    pub fn size_of_set(&self) -> Option<usize> {
+        // TODO: compute this if it is not provided (#9).
+        self.data().size_of_set()
+    }
+
+    pub fn position_in_set(&self) -> Option<usize> {
+        // TODO: compute this if it is not provided (#9).
+        self.data().position_in_set()
+    }
+
+    pub fn sort_direction(&self) -> Option<SortDirection> {
+        self.data().sort_direction()
     }
 
     pub fn supports_toggle(&self) -> bool {
@@ -432,10 +638,15 @@ impl<'a> Node<'a> {
     }
 
     pub fn supports_expand_collapse(&self) -> bool {
-        self.data().is_expanded().is_some()
+        self.has_popup().is_some()
+            || self.data().is_expanded().is_some()
+            || matches!(
+                self.role(),
+                Role::ComboBox | Role::EditableComboBox | Role::DisclosureTriangle | Role::TreeItem
+            )
     }
 
-    pub fn is_invocable(&self) -> bool {
+    pub fn is_invocable(&self, parent_filter: &impl Fn(&Node) -> FilterResult) -> bool {
         // A control is "invocable" if it initiates an action when activated but
         // does not maintain any state. A control that maintains state
         // when activated would be considered a toggle or expand-collapse
@@ -444,31 +655,34 @@ impl<'a> Node<'a> {
         // such as when clicking a text input, the control is not considered
         // "invocable", as the "invoke" action would be a redundant synonym
         // for the "set focus" action. The same logic applies to selection.
-        self.is_clickable()
-            && !matches!(
-                self.default_action_verb(),
-                Some(
-                    DefaultActionVerb::Focus
-                        | DefaultActionVerb::Select
-                        | DefaultActionVerb::Unselect
-                )
-            )
+        self.is_clickable(parent_filter)
+            && !self.is_text_input()
+            && !matches!(self.role(), Role::Document | Role::Terminal)
             && !self.supports_toggle()
             && !self.supports_expand_collapse()
+            && self.is_selected().is_none()
     }
 
-    // The future of the `Action` enum is undecided, so keep the following
-    // function private for now.
-    fn supports_action(&self, action: Action) -> bool {
-        self.data().supports_action(action)
+    pub fn supports_action(
+        &self,
+        action: Action,
+        parent_filter: &impl Fn(&Node) -> FilterResult,
+    ) -> bool {
+        if self.data().supports_action(action) {
+            return true;
+        }
+        if let Some(parent) = self.filtered_parent(parent_filter) {
+            return parent.data().child_supports_action(action);
+        }
+        false
     }
 
-    pub fn supports_increment(&self) -> bool {
-        self.supports_action(Action::Increment)
+    pub fn supports_increment(&self, parent_filter: &impl Fn(&Node) -> FilterResult) -> bool {
+        self.supports_action(Action::Increment, parent_filter)
     }
 
-    pub fn supports_decrement(&self) -> bool {
-        self.supports_action(Action::Decrement)
+    pub fn supports_decrement(&self, parent_filter: &impl Fn(&Node) -> FilterResult) -> bool {
+        self.supports_action(Action::Decrement, parent_filter)
     }
 }
 
@@ -486,26 +700,64 @@ impl<'a> Node<'a> {
     ) -> impl DoubleEndedIterator<Item = Node<'a>> + FusedIterator<Item = Node<'a>> + 'a {
         let explicit = &self.state.data.labelled_by();
         if explicit.is_empty()
-            && matches!(self.role(), Role::Button | Role::DefaultButton | Role::Link)
+            && matches!(
+                self.role(),
+                Role::Button
+                    | Role::CheckBox
+                    | Role::DefaultButton
+                    | Role::Link
+                    | Role::MenuItem
+                    | Role::MenuItemCheckBox
+                    | Role::MenuItemRadio
+                    | Role::RadioButton
+            )
         {
             LabelledBy::FromDescendants(FilteredChildren::new(*self, &descendant_label_filter))
         } else {
             LabelledBy::Explicit {
                 ids: explicit.iter(),
                 tree_state: self.tree_state,
+                node_id: self.id,
             }
         }
     }
 
-    pub fn name(&self) -> Option<String> {
-        if let Some(name) = &self.data().name() {
-            Some(name.to_string())
+    pub fn label_comes_from_value(&self) -> bool {
+        self.role() == Role::Label
+    }
+
+    pub fn label(&self) -> Option<String> {
+        let mut result = String::new();
+        self.write_label(&mut result).unwrap().then_some(result)
+    }
+
+    fn write_label_direct<W: fmt::Write>(&self, mut writer: W) -> Result<bool, fmt::Error> {
+        if let Some(label) = &self.data().label() {
+            writer.write_str(label)?;
+            Ok(true)
         } else {
-            let names = self
-                .labelled_by()
-                .filter_map(|node| node.name())
-                .collect::<Vec<String>>();
-            (!names.is_empty()).then(move || names.join(" "))
+            Ok(false)
+        }
+    }
+
+    pub fn write_label<W: fmt::Write>(&self, mut writer: W) -> Result<bool, fmt::Error> {
+        if self.write_label_direct(&mut writer)? {
+            Ok(true)
+        } else {
+            let mut wrote_one = false;
+            for node in self.labelled_by() {
+                let writer = SpacePrefixingWriter {
+                    inner: &mut writer,
+                    need_prefix: wrote_one,
+                };
+                let wrote_this_time = if node.label_comes_from_value() {
+                    node.write_value(writer)
+                } else {
+                    node.write_label_direct(writer)
+                }?;
+                wrote_one = wrote_one || wrote_this_time;
+            }
+            Ok(wrote_one)
         }
     }
 
@@ -515,19 +767,54 @@ impl<'a> Node<'a> {
             .map(|description| description.to_string())
     }
 
-    pub fn placeholder(&self) -> Option<String> {
+    pub fn url(&self) -> Option<&str> {
+        self.data().url()
+    }
+
+    pub fn supports_url(&self) -> bool {
+        matches!(
+            self.role(),
+            Role::Link
+                | Role::DocBackLink
+                | Role::DocBiblioRef
+                | Role::DocGlossRef
+                | Role::DocNoteRef
+        ) && self.url().is_some()
+    }
+
+    fn is_empty_text_input(&self) -> bool {
+        let mut text_runs = self.text_runs();
+        if let Some(first_text_run) = text_runs.next() {
+            first_text_run
+                .data()
+                .value()
+                .is_none_or(|value| value.is_empty())
+                && text_runs.next().is_none()
+        } else {
+            true
+        }
+    }
+
+    pub fn placeholder(&self) -> Option<&str> {
         self.data()
             .placeholder()
-            .map(|placeholder| placeholder.to_string())
+            .filter(|_| self.is_text_input() && self.is_empty_text_input())
     }
 
     pub fn value(&self) -> Option<String> {
+        let mut result = String::new();
+        self.write_value(&mut result).unwrap().then_some(result)
+    }
+
+    pub fn write_value<W: fmt::Write>(&self, mut writer: W) -> Result<bool, fmt::Error> {
         if let Some(value) = &self.data().value() {
-            Some(value.to_string())
+            writer.write_str(value)?;
+            Ok(true)
         } else if self.supports_text_ranges() && !self.is_multiline() {
-            Some(self.document_range().text())
+            self.document_range().write_text(writer)?;
+            Ok(true)
         } else {
-            None
+            Ok(false)
         }
     }
 
@@ -561,8 +848,6 @@ impl<'a> Node<'a> {
             Role::Article
                 | Role::Definition
                 | Role::DescriptionList
-                | Role::DescriptionListTerm
-                | Role::Directory
                 | Role::Document
                 | Role::GraphicsDocument
                 | Role::Image
@@ -578,6 +863,10 @@ impl<'a> Node<'a> {
         )
     }
 
+    pub fn is_required(&self) -> bool {
+        self.data().is_required()
+    }
+
     pub fn live(&self) -> Live {
         self.data()
             .live()
@@ -586,6 +875,61 @@ impl<'a> Node<'a> {
 
     pub fn is_selected(&self) -> Option<bool> {
         self.data().is_selected()
+    }
+
+    pub fn is_item_like(&self) -> bool {
+        matches!(
+            self.role(),
+            Role::Article
+                | Role::Comment
+                | Role::ListItem
+                | Role::MenuItem
+                | Role::MenuItemRadio
+                | Role::Tab
+                | Role::MenuItemCheckBox
+                | Role::TreeItem
+                | Role::ListBoxOption
+                | Role::MenuListOption
+                | Role::RadioButton
+                | Role::Term
+        )
+    }
+
+    pub fn is_container_with_selectable_children(&self) -> bool {
+        matches!(
+            self.role(),
+            Role::ComboBox
+                | Role::EditableComboBox
+                | Role::Grid
+                | Role::ListBox
+                | Role::ListGrid
+                | Role::Menu
+                | Role::MenuBar
+                | Role::MenuListPopup
+                | Role::RadioGroup
+                | Role::TabList
+                | Role::Toolbar
+                | Role::Tree
+                | Role::TreeGrid
+        )
+    }
+
+    pub fn controls(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = Node<'a>> + FusedIterator<Item = Node<'a>> + 'a {
+        let state = self.tree_state;
+        let id = self.id;
+        let data = &self.state.data;
+        data.controls()
+            .iter()
+            .map(move |control_id| state.node_by_id(id.with_same_tree(*control_id)).unwrap())
+    }
+
+    pub fn active_descendant(&self) -> Option<Node<'a>> {
+        self.state
+            .data
+            .active_descendant()
+            .and_then(|id| self.tree_state.node_by_id(self.id.with_same_tree(id)))
     }
 
     pub fn raw_text_selection(&self) -> Option<&TextSelection> {
@@ -655,11 +999,63 @@ impl<'a> Node<'a> {
         }
         None
     }
+
+    pub fn selection_container(&self, filter: &impl Fn(&Node) -> FilterResult) -> Option<Node<'a>> {
+        self.filtered_parent(&|parent| match filter(parent) {
+            FilterResult::Include if parent.is_container_with_selectable_children() => {
+                FilterResult::Include
+            }
+            FilterResult::Include => FilterResult::ExcludeNode,
+            filter_result => filter_result,
+        })
+    }
+
+    pub fn items(
+        &self,
+        filter: impl Fn(&Node) -> FilterResult + 'a,
+    ) -> impl DoubleEndedIterator<Item = Node<'a>> + FusedIterator<Item = Node<'a>> + 'a {
+        self.filtered_children(move |child| match filter(child) {
+            FilterResult::Include if child.is_item_like() => FilterResult::Include,
+            FilterResult::Include => FilterResult::ExcludeNode,
+            filter_result => filter_result,
+        })
+    }
+}
+
+struct SpacePrefixingWriter<W: fmt::Write> {
+    inner: W,
+    need_prefix: bool,
+}
+
+impl<W: fmt::Write> SpacePrefixingWriter<W> {
+    fn write_prefix_if_needed(&mut self) -> fmt::Result {
+        if self.need_prefix {
+            self.inner.write_char(' ')?;
+            self.need_prefix = false;
+        }
+        Ok(())
+    }
+}
+
+impl<W: fmt::Write> fmt::Write for SpacePrefixingWriter<W> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write_prefix_if_needed()?;
+        self.inner.write_str(s)
+    }
+
+    fn write_char(&mut self, c: char) -> fmt::Result {
+        self.write_prefix_if_needed()?;
+        self.inner.write_char(c)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use accesskit::{NodeBuilder, NodeId, Point, Rect, Role, Tree, TreeUpdate};
+    use accesskit::{
+        Action, Node, NodeId, Point, Rect, Role, TextDirection, TextPosition, TextSelection, Tree,
+        TreeId, TreeUpdate,
+    };
+    use alloc::vec;
 
     use crate::tests::*;
 
@@ -670,26 +1066,26 @@ mod tests {
         assert_eq!(
             Some((ROOT_ID, 0)),
             tree.state()
-                .node_by_id(PARAGRAPH_0_ID)
+                .node_by_id(nid(PARAGRAPH_0_ID))
                 .unwrap()
                 .parent_and_index()
-                .map(|(parent, index)| (parent.id(), index))
+                .map(|(parent, index)| (parent.id().to_components().0, index))
         );
         assert_eq!(
             Some((PARAGRAPH_0_ID, 0)),
             tree.state()
-                .node_by_id(LABEL_0_0_IGNORED_ID)
+                .node_by_id(nid(LABEL_0_0_IGNORED_ID))
                 .unwrap()
                 .parent_and_index()
-                .map(|(parent, index)| (parent.id(), index))
+                .map(|(parent, index)| (parent.id().to_components().0, index))
         );
         assert_eq!(
             Some((ROOT_ID, 1)),
             tree.state()
-                .node_by_id(PARAGRAPH_1_IGNORED_ID)
+                .node_by_id(nid(PARAGRAPH_1_IGNORED_ID))
                 .unwrap()
                 .parent_and_index()
-                .map(|(parent, index)| (parent.id(), index))
+                .map(|(parent, index)| (parent.id().to_components().0, index))
         );
     }
 
@@ -698,20 +1094,28 @@ mod tests {
         let tree = test_tree();
         assert_eq!(
             LABEL_0_0_IGNORED_ID,
-            tree.state().root().deepest_first_child().unwrap().id()
+            tree.state()
+                .root()
+                .deepest_first_child()
+                .unwrap()
+                .id()
+                .to_components()
+                .0
         );
         assert_eq!(
             LABEL_0_0_IGNORED_ID,
             tree.state()
-                .node_by_id(PARAGRAPH_0_ID)
+                .node_by_id(nid(PARAGRAPH_0_ID))
                 .unwrap()
                 .deepest_first_child()
                 .unwrap()
                 .id()
+                .to_components()
+                .0
         );
         assert!(tree
             .state()
-            .node_by_id(LABEL_0_0_IGNORED_ID)
+            .node_by_id(nid(LABEL_0_0_IGNORED_ID))
             .unwrap()
             .deepest_first_child()
             .is_none());
@@ -723,11 +1127,13 @@ mod tests {
         assert_eq!(
             ROOT_ID,
             tree.state()
-                .node_by_id(LABEL_1_1_ID)
+                .node_by_id(nid(LABEL_1_1_ID))
                 .unwrap()
                 .filtered_parent(&test_tree_filter)
                 .unwrap()
                 .id()
+                .to_components()
+                .0
         );
         assert!(tree
             .state()
@@ -746,16 +1152,18 @@ mod tests {
                 .deepest_first_filtered_child(&test_tree_filter)
                 .unwrap()
                 .id()
+                .to_components()
+                .0
         );
         assert!(tree
             .state()
-            .node_by_id(PARAGRAPH_0_ID)
+            .node_by_id(nid(PARAGRAPH_0_ID))
             .unwrap()
             .deepest_first_filtered_child(&test_tree_filter)
             .is_none());
         assert!(tree
             .state()
-            .node_by_id(LABEL_0_0_IGNORED_ID)
+            .node_by_id(nid(LABEL_0_0_IGNORED_ID))
             .unwrap()
             .deepest_first_filtered_child(&test_tree_filter)
             .is_none());
@@ -766,20 +1174,28 @@ mod tests {
         let tree = test_tree();
         assert_eq!(
             EMPTY_CONTAINER_3_3_IGNORED_ID,
-            tree.state().root().deepest_last_child().unwrap().id()
+            tree.state()
+                .root()
+                .deepest_last_child()
+                .unwrap()
+                .id()
+                .to_components()
+                .0
         );
         assert_eq!(
             EMPTY_CONTAINER_3_3_IGNORED_ID,
             tree.state()
-                .node_by_id(PARAGRAPH_3_IGNORED_ID)
+                .node_by_id(nid(PARAGRAPH_3_IGNORED_ID))
                 .unwrap()
                 .deepest_last_child()
                 .unwrap()
                 .id()
+                .to_components()
+                .0
         );
         assert!(tree
             .state()
-            .node_by_id(BUTTON_3_2_ID)
+            .node_by_id(nid(BUTTON_3_2_ID))
             .unwrap()
             .deepest_last_child()
             .is_none());
@@ -795,25 +1211,29 @@ mod tests {
                 .deepest_last_filtered_child(&test_tree_filter)
                 .unwrap()
                 .id()
+                .to_components()
+                .0
         );
         assert_eq!(
             BUTTON_3_2_ID,
             tree.state()
-                .node_by_id(PARAGRAPH_3_IGNORED_ID)
+                .node_by_id(nid(PARAGRAPH_3_IGNORED_ID))
                 .unwrap()
                 .deepest_last_filtered_child(&test_tree_filter)
                 .unwrap()
                 .id()
+                .to_components()
+                .0
         );
         assert!(tree
             .state()
-            .node_by_id(BUTTON_3_2_ID)
+            .node_by_id(nid(BUTTON_3_2_ID))
             .unwrap()
             .deepest_last_filtered_child(&test_tree_filter)
             .is_none());
         assert!(tree
             .state()
-            .node_by_id(PARAGRAPH_0_ID)
+            .node_by_id(nid(PARAGRAPH_0_ID))
             .unwrap()
             .deepest_last_filtered_child(&test_tree_filter)
             .is_none());
@@ -824,36 +1244,49 @@ mod tests {
         let tree = test_tree();
         assert!(tree
             .state()
-            .node_by_id(PARAGRAPH_0_ID)
+            .node_by_id(nid(PARAGRAPH_0_ID))
             .unwrap()
             .is_descendant_of(&tree.state().root()));
         assert!(tree
             .state()
-            .node_by_id(LABEL_0_0_IGNORED_ID)
+            .node_by_id(nid(LABEL_0_0_IGNORED_ID))
             .unwrap()
             .is_descendant_of(&tree.state().root()));
         assert!(tree
             .state()
-            .node_by_id(LABEL_0_0_IGNORED_ID)
+            .node_by_id(nid(LABEL_0_0_IGNORED_ID))
             .unwrap()
-            .is_descendant_of(&tree.state().node_by_id(PARAGRAPH_0_ID).unwrap()));
+            .is_descendant_of(&tree.state().node_by_id(nid(PARAGRAPH_0_ID)).unwrap()));
         assert!(!tree
             .state()
-            .node_by_id(LABEL_0_0_IGNORED_ID)
+            .node_by_id(nid(LABEL_0_0_IGNORED_ID))
             .unwrap()
-            .is_descendant_of(&tree.state().node_by_id(PARAGRAPH_2_ID).unwrap()));
+            .is_descendant_of(&tree.state().node_by_id(nid(PARAGRAPH_2_ID)).unwrap()));
         assert!(!tree
             .state()
-            .node_by_id(PARAGRAPH_0_ID)
+            .node_by_id(nid(PARAGRAPH_0_ID))
             .unwrap()
-            .is_descendant_of(&tree.state().node_by_id(PARAGRAPH_2_ID).unwrap()));
+            .is_descendant_of(&tree.state().node_by_id(nid(PARAGRAPH_2_ID)).unwrap()));
     }
 
     #[test]
     fn is_root() {
         let tree = test_tree();
-        assert!(tree.state().node_by_id(ROOT_ID).unwrap().is_root());
-        assert!(!tree.state().node_by_id(PARAGRAPH_0_ID).unwrap().is_root());
+        assert!(tree.state().node_by_id(nid(ROOT_ID)).unwrap().is_root());
+        assert!(!tree
+            .state()
+            .node_by_id(nid(PARAGRAPH_0_ID))
+            .unwrap()
+            .is_root());
+    }
+
+    #[test]
+    fn locate() {
+        let tree = test_tree();
+        let root = tree.state().root();
+        assert_eq!((ROOT_ID, TreeId::ROOT), root.locate());
+        let child = tree.state().node_by_id(nid(PARAGRAPH_0_ID)).unwrap();
+        assert_eq!((PARAGRAPH_0_ID, TreeId::ROOT), child.locate());
     }
 
     #[test]
@@ -861,7 +1294,7 @@ mod tests {
         let tree = test_tree();
         assert!(tree
             .state()
-            .node_by_id(ROOT_ID)
+            .node_by_id(nid(ROOT_ID))
             .unwrap()
             .bounding_box()
             .is_none());
@@ -873,7 +1306,7 @@ mod tests {
                 y1: 80.0,
             }),
             tree.state()
-                .node_by_id(PARAGRAPH_1_IGNORED_ID)
+                .node_by_id(nid(PARAGRAPH_1_IGNORED_ID))
                 .unwrap()
                 .bounding_box()
         );
@@ -885,7 +1318,7 @@ mod tests {
                 y1: 70.0,
             }),
             tree.state()
-                .node_by_id(LABEL_1_1_ID)
+                .node_by_id(nid(LABEL_1_1_ID))
                 .unwrap()
                 .bounding_box()
         );
@@ -900,14 +1333,14 @@ mod tests {
             .node_at_point(Point::new(10.0, 40.0), &test_tree_filter)
             .is_none());
         assert_eq!(
-            Some(LABEL_1_1_ID),
+            Some(nid(LABEL_1_1_ID)),
             tree.state()
                 .root()
                 .node_at_point(Point::new(20.0, 50.0), &test_tree_filter)
                 .map(|node| node.id())
         );
         assert_eq!(
-            Some(LABEL_1_1_ID),
+            Some(nid(LABEL_1_1_ID)),
             tree.state()
                 .root()
                 .node_at_point(Point::new(50.0, 60.0), &test_tree_filter)
@@ -921,25 +1354,29 @@ mod tests {
     }
 
     #[test]
-    fn no_name_or_labelled_by() {
+    fn no_label_or_labelled_by() {
         let update = TreeUpdate {
             nodes: vec![
                 (NodeId(0), {
-                    let mut builder = NodeBuilder::new(Role::Window);
-                    builder.set_children(vec![NodeId(1)]);
-                    builder.build()
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![NodeId(1)]);
+                    node
                 }),
-                (NodeId(1), NodeBuilder::new(Role::Button).build()),
+                (NodeId(1), Node::new(Role::Button)),
             ],
             tree: Some(Tree::new(NodeId(0))),
+            tree_id: TreeId::ROOT,
             focus: NodeId(0),
         };
         let tree = crate::Tree::new(update, false);
-        assert_eq!(None, tree.state().node_by_id(NodeId(1)).unwrap().name());
+        assert_eq!(
+            None,
+            tree.state().node_by_id(nid(NodeId(1))).unwrap().label()
+        );
     }
 
     #[test]
-    fn name_from_labelled_by() {
+    fn label_from_labelled_by() {
         // The following mock UI probably isn't very localization-friendly,
         // but it's good for this test.
         const LABEL_1: &str = "Check email every";
@@ -948,94 +1385,569 @@ mod tests {
         let update = TreeUpdate {
             nodes: vec![
                 (NodeId(0), {
-                    let mut builder = NodeBuilder::new(Role::Window);
-                    builder.set_children(vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4)]);
-                    builder.build()
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4)]);
+                    node
                 }),
                 (NodeId(1), {
-                    let mut builder = NodeBuilder::new(Role::CheckBox);
-                    builder.set_labelled_by(vec![NodeId(2), NodeId(4)]);
-                    builder.build()
+                    let mut node = Node::new(Role::CheckBox);
+                    node.set_labelled_by(vec![NodeId(2), NodeId(4)]);
+                    node
                 }),
                 (NodeId(2), {
-                    let mut builder = NodeBuilder::new(Role::Label);
-                    builder.set_name(LABEL_1);
-                    builder.build()
+                    let mut node = Node::new(Role::Label);
+                    node.set_value(LABEL_1);
+                    node
                 }),
                 (NodeId(3), {
-                    let mut builder = NodeBuilder::new(Role::TextInput);
-                    builder.push_labelled_by(NodeId(4));
-                    builder.build()
+                    let mut node = Node::new(Role::TextInput);
+                    node.push_labelled_by(NodeId(4));
+                    node
                 }),
                 (NodeId(4), {
-                    let mut builder = NodeBuilder::new(Role::Label);
-                    builder.set_name(LABEL_2);
-                    builder.build()
+                    let mut node = Node::new(Role::Label);
+                    node.set_value(LABEL_2);
+                    node
                 }),
             ],
             tree: Some(Tree::new(NodeId(0))),
+            tree_id: TreeId::ROOT,
             focus: NodeId(0),
         };
         let tree = crate::Tree::new(update, false);
         assert_eq!(
             Some([LABEL_1, LABEL_2].join(" ")),
-            tree.state().node_by_id(NodeId(1)).unwrap().name()
+            tree.state().node_by_id(nid(NodeId(1))).unwrap().label()
         );
         assert_eq!(
             Some(LABEL_2.into()),
-            tree.state().node_by_id(NodeId(3)).unwrap().name()
+            tree.state().node_by_id(nid(NodeId(3))).unwrap().label()
         );
     }
 
     #[test]
-    fn name_from_descendant_label() {
-        const BUTTON_LABEL: &str = "Play";
+    fn label_from_descendant_label() {
+        const ROOT_ID: NodeId = NodeId(0);
+        const DEFAULT_BUTTON_ID: NodeId = NodeId(1);
+        const DEFAULT_BUTTON_LABEL_ID: NodeId = NodeId(2);
+        const LINK_ID: NodeId = NodeId(3);
+        const LINK_LABEL_CONTAINER_ID: NodeId = NodeId(4);
+        const LINK_LABEL_ID: NodeId = NodeId(5);
+        const CHECKBOX_ID: NodeId = NodeId(6);
+        const CHECKBOX_LABEL_ID: NodeId = NodeId(7);
+        const RADIO_BUTTON_ID: NodeId = NodeId(8);
+        const RADIO_BUTTON_LABEL_ID: NodeId = NodeId(9);
+        const MENU_BUTTON_ID: NodeId = NodeId(10);
+        const MENU_BUTTON_LABEL_ID: NodeId = NodeId(11);
+        const MENU_ID: NodeId = NodeId(12);
+        const MENU_ITEM_ID: NodeId = NodeId(13);
+        const MENU_ITEM_LABEL_ID: NodeId = NodeId(14);
+        const MENU_ITEM_CHECKBOX_ID: NodeId = NodeId(15);
+        const MENU_ITEM_CHECKBOX_LABEL_ID: NodeId = NodeId(16);
+        const MENU_ITEM_RADIO_ID: NodeId = NodeId(17);
+        const MENU_ITEM_RADIO_LABEL_ID: NodeId = NodeId(18);
+
+        const DEFAULT_BUTTON_LABEL: &str = "Play";
         const LINK_LABEL: &str = "Watch in browser";
+        const CHECKBOX_LABEL: &str = "Resume from previous position";
+        const RADIO_BUTTON_LABEL: &str = "Normal speed";
+        const MENU_BUTTON_LABEL: &str = "More";
+        const MENU_ITEM_LABEL: &str = "Share";
+        const MENU_ITEM_CHECKBOX_LABEL: &str = "Apply volume processing";
+        const MENU_ITEM_RADIO_LABEL: &str = "Maximize loudness for noisy environment";
 
         let update = TreeUpdate {
             nodes: vec![
-                (NodeId(0), {
-                    let mut builder = NodeBuilder::new(Role::Window);
-                    builder.set_children(vec![NodeId(1), NodeId(3)]);
-                    builder.build()
+                (ROOT_ID, {
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![
+                        DEFAULT_BUTTON_ID,
+                        LINK_ID,
+                        CHECKBOX_ID,
+                        RADIO_BUTTON_ID,
+                        MENU_BUTTON_ID,
+                        MENU_ID,
+                    ]);
+                    node
                 }),
-                (NodeId(1), {
-                    let mut builder = NodeBuilder::new(Role::Button);
-                    builder.push_child(NodeId(2));
-                    builder.build()
+                (DEFAULT_BUTTON_ID, {
+                    let mut node = Node::new(Role::DefaultButton);
+                    node.push_child(DEFAULT_BUTTON_LABEL_ID);
+                    node
                 }),
-                (NodeId(2), {
-                    let mut builder = NodeBuilder::new(Role::Image);
-                    builder.set_name(BUTTON_LABEL);
-                    builder.build()
+                (DEFAULT_BUTTON_LABEL_ID, {
+                    let mut node = Node::new(Role::Image);
+                    node.set_label(DEFAULT_BUTTON_LABEL);
+                    node
                 }),
-                (NodeId(3), {
-                    let mut builder = NodeBuilder::new(Role::Link);
-                    builder.push_child(NodeId(4));
-                    builder.build()
+                (LINK_ID, {
+                    let mut node = Node::new(Role::Link);
+                    node.push_child(LINK_LABEL_CONTAINER_ID);
+                    node
                 }),
-                (NodeId(4), {
-                    let mut builder = NodeBuilder::new(Role::GenericContainer);
-                    builder.push_child(NodeId(5));
-                    builder.build()
+                (LINK_LABEL_CONTAINER_ID, {
+                    let mut node = Node::new(Role::GenericContainer);
+                    node.push_child(LINK_LABEL_ID);
+                    node
                 }),
-                (NodeId(5), {
-                    let mut builder = NodeBuilder::new(Role::Label);
-                    builder.set_name(LINK_LABEL);
-                    builder.build()
+                (LINK_LABEL_ID, {
+                    let mut node = Node::new(Role::Label);
+                    node.set_value(LINK_LABEL);
+                    node
+                }),
+                (CHECKBOX_ID, {
+                    let mut node = Node::new(Role::CheckBox);
+                    node.push_child(CHECKBOX_LABEL_ID);
+                    node
+                }),
+                (CHECKBOX_LABEL_ID, {
+                    let mut node = Node::new(Role::Label);
+                    node.set_value(CHECKBOX_LABEL);
+                    node
+                }),
+                (RADIO_BUTTON_ID, {
+                    let mut node = Node::new(Role::RadioButton);
+                    node.push_child(RADIO_BUTTON_LABEL_ID);
+                    node
+                }),
+                (RADIO_BUTTON_LABEL_ID, {
+                    let mut node = Node::new(Role::Label);
+                    node.set_value(RADIO_BUTTON_LABEL);
+                    node
+                }),
+                (MENU_BUTTON_ID, {
+                    let mut node = Node::new(Role::Button);
+                    node.push_child(MENU_BUTTON_LABEL_ID);
+                    node
+                }),
+                (MENU_BUTTON_LABEL_ID, {
+                    let mut node = Node::new(Role::Label);
+                    node.set_value(MENU_BUTTON_LABEL);
+                    node
+                }),
+                (MENU_ID, {
+                    let mut node = Node::new(Role::Menu);
+                    node.set_children([MENU_ITEM_ID, MENU_ITEM_CHECKBOX_ID, MENU_ITEM_RADIO_ID]);
+                    node
+                }),
+                (MENU_ITEM_ID, {
+                    let mut node = Node::new(Role::MenuItem);
+                    node.push_child(MENU_ITEM_LABEL_ID);
+                    node
+                }),
+                (MENU_ITEM_LABEL_ID, {
+                    let mut node = Node::new(Role::Label);
+                    node.set_value(MENU_ITEM_LABEL);
+                    node
+                }),
+                (MENU_ITEM_CHECKBOX_ID, {
+                    let mut node = Node::new(Role::MenuItemCheckBox);
+                    node.push_child(MENU_ITEM_CHECKBOX_LABEL_ID);
+                    node
+                }),
+                (MENU_ITEM_CHECKBOX_LABEL_ID, {
+                    let mut node = Node::new(Role::Label);
+                    node.set_value(MENU_ITEM_CHECKBOX_LABEL);
+                    node
+                }),
+                (MENU_ITEM_RADIO_ID, {
+                    let mut node = Node::new(Role::MenuItemRadio);
+                    node.push_child(MENU_ITEM_RADIO_LABEL_ID);
+                    node
+                }),
+                (MENU_ITEM_RADIO_LABEL_ID, {
+                    let mut node = Node::new(Role::Label);
+                    node.set_value(MENU_ITEM_RADIO_LABEL);
+                    node
                 }),
             ],
-            tree: Some(Tree::new(NodeId(0))),
-            focus: NodeId(0),
+            tree: Some(Tree::new(ROOT_ID)),
+            tree_id: TreeId::ROOT,
+            focus: ROOT_ID,
         };
         let tree = crate::Tree::new(update, false);
         assert_eq!(
-            Some(BUTTON_LABEL.into()),
-            tree.state().node_by_id(NodeId(1)).unwrap().name()
+            Some(DEFAULT_BUTTON_LABEL.into()),
+            tree.state()
+                .node_by_id(nid(DEFAULT_BUTTON_ID))
+                .unwrap()
+                .label()
         );
         assert_eq!(
             Some(LINK_LABEL.into()),
-            tree.state().node_by_id(NodeId(3)).unwrap().name()
+            tree.state().node_by_id(nid(LINK_ID)).unwrap().label()
         );
+        assert_eq!(
+            Some(CHECKBOX_LABEL.into()),
+            tree.state().node_by_id(nid(CHECKBOX_ID)).unwrap().label()
+        );
+        assert_eq!(
+            Some(RADIO_BUTTON_LABEL.into()),
+            tree.state()
+                .node_by_id(nid(RADIO_BUTTON_ID))
+                .unwrap()
+                .label()
+        );
+        assert_eq!(
+            Some(MENU_BUTTON_LABEL.into()),
+            tree.state()
+                .node_by_id(nid(MENU_BUTTON_ID))
+                .unwrap()
+                .label()
+        );
+        assert_eq!(
+            Some(MENU_ITEM_LABEL.into()),
+            tree.state().node_by_id(nid(MENU_ITEM_ID)).unwrap().label()
+        );
+        assert_eq!(
+            Some(MENU_ITEM_CHECKBOX_LABEL.into()),
+            tree.state()
+                .node_by_id(nid(MENU_ITEM_CHECKBOX_ID))
+                .unwrap()
+                .label()
+        );
+        assert_eq!(
+            Some(MENU_ITEM_RADIO_LABEL.into()),
+            tree.state()
+                .node_by_id(nid(MENU_ITEM_RADIO_ID))
+                .unwrap()
+                .label()
+        );
+    }
+
+    #[test]
+    fn placeholder_should_be_exposed_on_empty_text_input() {
+        const ROOT_ID: NodeId = NodeId(0);
+        const TEXT_INPUT_ID: NodeId = NodeId(1);
+        const TEXT_RUN_ID: NodeId = NodeId(2);
+
+        const PLACEHOLDER: &str = "John Doe";
+
+        let update = TreeUpdate {
+            nodes: vec![
+                (ROOT_ID, {
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![TEXT_INPUT_ID]);
+                    node
+                }),
+                (TEXT_INPUT_ID, {
+                    let mut node = Node::new(Role::MultilineTextInput);
+                    node.set_bounds(Rect {
+                        x0: 8.0,
+                        y0: 8.0,
+                        x1: 296.0,
+                        y1: 69.5,
+                    });
+                    node.push_child(TEXT_RUN_ID);
+                    node.set_placeholder(PLACEHOLDER);
+                    node.set_text_selection(TextSelection {
+                        anchor: TextPosition {
+                            node: TEXT_RUN_ID,
+                            character_index: 0,
+                        },
+                        focus: TextPosition {
+                            node: TEXT_RUN_ID,
+                            character_index: 0,
+                        },
+                    });
+                    node.add_action(Action::Focus);
+                    node
+                }),
+                (TEXT_RUN_ID, {
+                    let mut node = Node::new(Role::TextRun);
+                    node.set_bounds(Rect {
+                        x0: 12.0,
+                        y0: 10.0,
+                        x1: 12.0,
+                        y1: 24.0,
+                    });
+                    node.set_value("");
+                    node.set_character_lengths([]);
+                    node.set_character_positions([]);
+                    node.set_character_widths([]);
+                    node.set_text_direction(TextDirection::LeftToRight);
+                    node
+                }),
+            ],
+            tree: Some(Tree::new(ROOT_ID)),
+            tree_id: TreeId::ROOT,
+            focus: TEXT_INPUT_ID,
+        };
+        let tree = crate::Tree::new(update, false);
+        assert_eq!(
+            Some(PLACEHOLDER),
+            tree.state()
+                .node_by_id(nid(TEXT_INPUT_ID))
+                .unwrap()
+                .placeholder()
+        );
+    }
+
+    #[test]
+    fn placeholder_should_be_ignored_on_non_empty_text_input() {
+        const ROOT_ID: NodeId = NodeId(0);
+        const TEXT_INPUT_ID: NodeId = NodeId(1);
+        const TEXT_RUN_ID: NodeId = NodeId(2);
+
+        const PLACEHOLDER: &str = "John Doe";
+
+        let update = TreeUpdate {
+            nodes: vec![
+                (ROOT_ID, {
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![TEXT_INPUT_ID]);
+                    node
+                }),
+                (TEXT_INPUT_ID, {
+                    let mut node = Node::new(Role::MultilineTextInput);
+                    node.set_bounds(Rect {
+                        x0: 8.0,
+                        y0: 8.0,
+                        x1: 296.0,
+                        y1: 69.5,
+                    });
+                    node.push_child(TEXT_RUN_ID);
+                    node.set_placeholder(PLACEHOLDER);
+                    node.set_text_selection(TextSelection {
+                        anchor: TextPosition {
+                            node: TEXT_RUN_ID,
+                            character_index: 1,
+                        },
+                        focus: TextPosition {
+                            node: TEXT_RUN_ID,
+                            character_index: 1,
+                        },
+                    });
+                    node.add_action(Action::Focus);
+                    node
+                }),
+                (TEXT_RUN_ID, {
+                    let mut node = Node::new(Role::TextRun);
+                    node.set_bounds(Rect {
+                        x0: 12.0,
+                        y0: 10.0,
+                        x1: 20.0,
+                        y1: 24.0,
+                    });
+                    node.set_value("A");
+                    node.set_character_lengths([1]);
+                    node.set_character_positions([0.0]);
+                    node.set_character_widths([8.0]);
+                    node.set_word_starts([0]);
+                    node.set_text_direction(TextDirection::LeftToRight);
+                    node
+                }),
+            ],
+            tree: Some(Tree::new(ROOT_ID)),
+            tree_id: TreeId::ROOT,
+            focus: TEXT_INPUT_ID,
+        };
+        let tree = crate::Tree::new(update, false);
+        assert_eq!(
+            None,
+            tree.state()
+                .node_by_id(nid(TEXT_INPUT_ID))
+                .unwrap()
+                .placeholder()
+        );
+    }
+
+    #[test]
+    fn hidden_flag_should_be_inherited() {
+        const ROOT_ID: NodeId = NodeId(0);
+        const CONTAINER_ID: NodeId = NodeId(1);
+        const LEAF_ID: NodeId = NodeId(2);
+
+        let update = TreeUpdate {
+            nodes: vec![
+                (ROOT_ID, {
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![CONTAINER_ID]);
+                    node
+                }),
+                (CONTAINER_ID, {
+                    let mut node = Node::new(Role::GenericContainer);
+                    node.set_hidden();
+                    node.push_child(LEAF_ID);
+                    node
+                }),
+                (LEAF_ID, {
+                    let mut node = Node::new(Role::Button);
+                    node.set_label("OK");
+                    node
+                }),
+            ],
+            tree: Some(Tree::new(ROOT_ID)),
+            tree_id: TreeId::ROOT,
+            focus: ROOT_ID,
+        };
+        let tree = crate::Tree::new(update, false);
+        assert!(tree.state().node_by_id(nid(LEAF_ID)).unwrap().is_hidden());
+    }
+
+    mod node_id {
+        use super::NodeId as LocalNodeId;
+        use crate::node::NodeId;
+        use crate::tree::TreeIndex;
+
+        #[test]
+        fn new_and_to_components_round_trip() {
+            let node_id = LocalNodeId(42);
+            let tree_index = TreeIndex(7);
+            let id = NodeId::new(node_id, tree_index);
+            let (extracted_node_id, extracted_tree_index) = id.to_components();
+            assert_eq!(node_id, extracted_node_id);
+            assert_eq!(tree_index, extracted_tree_index);
+        }
+
+        #[test]
+        fn with_same_tree_preserves_tree_index() {
+            let original_node_id = LocalNodeId(100);
+            let tree_index = TreeIndex(5);
+            let id = NodeId::new(original_node_id, tree_index);
+
+            let new_node_id = LocalNodeId(200);
+            let new_id = id.with_same_tree(new_node_id);
+
+            let (extracted_node_id, extracted_tree_index) = new_id.to_components();
+            assert_eq!(new_node_id, extracted_node_id);
+            assert_eq!(tree_index, extracted_tree_index);
+        }
+
+        #[test]
+        fn into_u128() {
+            let node_id = LocalNodeId(12345);
+            let tree_index = TreeIndex(67);
+            let id = NodeId::new(node_id, tree_index);
+            let (extracted_node_id, extracted_tree_index) = id.to_components();
+            assert_eq!(node_id, extracted_node_id);
+            assert_eq!(tree_index, extracted_tree_index);
+        }
+
+        #[test]
+        fn equality() {
+            let id1 = NodeId::new(LocalNodeId(1), TreeIndex(2));
+            let id2 = NodeId::new(LocalNodeId(1), TreeIndex(2));
+            let id3 = NodeId::new(LocalNodeId(1), TreeIndex(3));
+            let id4 = NodeId::new(LocalNodeId(2), TreeIndex(2));
+
+            assert_eq!(id1, id2);
+            assert_ne!(id1, id3);
+            assert_ne!(id1, id4);
+        }
+    }
+
+    #[test]
+    fn is_focused_when_node_has_focus() {
+        const ROOT_ID: NodeId = NodeId(0);
+        const BUTTON_ID: NodeId = NodeId(1);
+
+        let update = TreeUpdate {
+            nodes: vec![
+                (ROOT_ID, {
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![BUTTON_ID]);
+                    node
+                }),
+                (BUTTON_ID, Node::new(Role::Button)),
+            ],
+            tree: Some(Tree::new(ROOT_ID)),
+            tree_id: TreeId::ROOT,
+            focus: BUTTON_ID,
+        };
+        let tree = crate::Tree::new(update, true);
+        assert!(tree
+            .state()
+            .node_by_id(nid(BUTTON_ID))
+            .unwrap()
+            .is_focused());
+    }
+
+    #[test]
+    fn is_focused_when_node_does_not_have_focus() {
+        const ROOT_ID: NodeId = NodeId(0);
+        const BUTTON_ID: NodeId = NodeId(1);
+
+        let update = TreeUpdate {
+            nodes: vec![
+                (ROOT_ID, {
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![BUTTON_ID]);
+                    node
+                }),
+                (BUTTON_ID, Node::new(Role::Button)),
+            ],
+            tree: Some(Tree::new(ROOT_ID)),
+            tree_id: TreeId::ROOT,
+            focus: ROOT_ID,
+        };
+        let tree = crate::Tree::new(update, true);
+        assert!(!tree
+            .state()
+            .node_by_id(nid(BUTTON_ID))
+            .unwrap()
+            .is_focused());
+    }
+
+    #[test]
+    fn is_focused_active_descendant_is_focused() {
+        const ROOT_ID: NodeId = NodeId(0);
+        const LISTBOX_ID: NodeId = NodeId(1);
+        const ITEM_ID: NodeId = NodeId(2);
+
+        let update = TreeUpdate {
+            nodes: vec![
+                (ROOT_ID, {
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![LISTBOX_ID]);
+                    node
+                }),
+                (LISTBOX_ID, {
+                    let mut node = Node::new(Role::ListBox);
+                    node.set_children(vec![ITEM_ID]);
+                    node.set_active_descendant(ITEM_ID);
+                    node
+                }),
+                (ITEM_ID, Node::new(Role::ListBoxOption)),
+            ],
+            tree: Some(Tree::new(ROOT_ID)),
+            tree_id: TreeId::ROOT,
+            focus: LISTBOX_ID,
+        };
+        let tree = crate::Tree::new(update, true);
+        assert!(tree.state().node_by_id(nid(ITEM_ID)).unwrap().is_focused());
+    }
+
+    #[test]
+    fn is_focused_node_with_active_descendant_is_not_focused() {
+        const ROOT_ID: NodeId = NodeId(0);
+        const LISTBOX_ID: NodeId = NodeId(1);
+        const ITEM_ID: NodeId = NodeId(2);
+
+        let update = TreeUpdate {
+            nodes: vec![
+                (ROOT_ID, {
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![LISTBOX_ID]);
+                    node
+                }),
+                (LISTBOX_ID, {
+                    let mut node = Node::new(Role::ListBox);
+                    node.set_children(vec![ITEM_ID]);
+                    node.set_active_descendant(ITEM_ID);
+                    node
+                }),
+                (ITEM_ID, Node::new(Role::ListBoxOption)),
+            ],
+            tree: Some(Tree::new(ROOT_ID)),
+            tree_id: TreeId::ROOT,
+            focus: LISTBOX_ID,
+        };
+        let tree = crate::Tree::new(update, true);
+        assert!(!tree
+            .state()
+            .node_by_id(nid(LISTBOX_ID))
+            .unwrap()
+            .is_focused());
     }
 }

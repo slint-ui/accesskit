@@ -14,10 +14,12 @@ mod node;
 mod rect;
 #[cfg(feature = "simplified-api")]
 pub mod simplified;
+mod text_attributes;
 mod util;
 
+pub use accesskit_consumer::NodeId;
 pub use atspi_common::{
-    CoordType, Granularity, InterfaceSet, Layer, Role, ScrollType, State, StateSet,
+    CoordType, Granularity, InterfaceSet, Layer, RelationType, Role, ScrollType, State, StateSet,
 };
 
 pub use action::*;

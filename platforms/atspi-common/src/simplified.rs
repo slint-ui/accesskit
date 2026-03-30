@@ -14,7 +14,9 @@ use crate::{
     WindowEvent,
 };
 
-pub use crate::{CoordType, Error, Granularity, Layer, Rect, Result, Role, ScrollType, StateSet};
+pub use crate::{
+    CoordType, Error, Granularity, Layer, Rect, RelationType, Result, Role, ScrollType, StateSet,
+};
 
 #[derive(Clone, Hash, PartialEq)]
 pub enum Accessible {
@@ -117,6 +119,13 @@ impl Accessible {
         }
     }
 
+    pub fn relation_set(&self) -> Result<HashMap<RelationType, Vec<Self>>> {
+        match self {
+            Self::Node(node) => node.relation_set(|id| Self::Node(node.relative(id))),
+            Self::Root(_) => Ok(HashMap::new()),
+        }
+    }
+
     pub fn application(&self) -> Result<Self> {
         match self {
             Self::Node(node) => node.root().map(Self::Root),
@@ -215,9 +224,132 @@ impl Accessible {
         }
     }
 
+    pub fn scroll_to(&self, scroll_type: ScrollType) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.scroll_to(scroll_type),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
     pub fn scroll_to_point(&self, coord_type: CoordType, x: i32, y: i32) -> Result<bool> {
         match self {
             Self::Node(node) => node.scroll_to_point(coord_type, x, y),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn supports_hyperlink(&self) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.supports_hyperlink(),
+            Self::Root(_) => Ok(false),
+        }
+    }
+
+    pub fn n_anchors(&self) -> Result<i32> {
+        match self {
+            Self::Node(node) => node.n_anchors(),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn hyperlink_start_index(&self) -> Result<i32> {
+        match self {
+            Self::Node(node) => node.hyperlink_start_index(),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn hyperlink_end_index(&self) -> Result<i32> {
+        match self {
+            Self::Node(node) => node.hyperlink_end_index(),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn hyperlink_object(&self, index: i32) -> Result<Option<Self>> {
+        match self {
+            Self::Node(node) => node
+                .hyperlink_object(index)
+                .map(|id| id.map(|id| Self::Node(node.relative(id)))),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn uri(&self, index: i32) -> Result<String> {
+        match self {
+            Self::Node(node) => node.uri(index),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn hyperlink_is_valid(&self) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.hyperlink_is_valid(),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn supports_selection(&self) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.supports_selection(),
+            Self::Root(_) => Ok(false),
+        }
+    }
+
+    pub fn n_selected_children(&self) -> Result<i32> {
+        match self {
+            Self::Node(node) => node.n_selected_children(),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn selected_child(&self, selected_child_index: usize) -> Result<Option<Self>> {
+        match self {
+            Self::Node(node) => node
+                .selected_child(selected_child_index)
+                .map(|id| id.map(|id| Self::Node(node.relative(id)))),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn select_child(&self, child_index: usize) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.select_child(child_index),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn deselect_selected_child(&self, selected_child_index: usize) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.deselect_selected_child(selected_child_index),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn is_child_selected(&self, child_index: usize) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.is_child_selected(child_index),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn select_all(&self) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.select_all(),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn clear_selection(&self) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.clear_selection(),
+            Self::Root(_) => Err(Error::UnsupportedInterface),
+        }
+    }
+
+    pub fn deselect_child(&self, child_index: usize) -> Result<bool> {
+        match self {
+            Self::Node(node) => node.deselect_child(child_index),
             Self::Root(_) => Err(Error::UnsupportedInterface),
         }
     }
@@ -275,14 +407,17 @@ impl Accessible {
         }
     }
 
-    pub fn text_attributes(&self, offset: i32) -> Result<(HashMap<String, String>, i32, i32)> {
+    pub fn text_attributes(
+        &self,
+        offset: i32,
+    ) -> Result<(HashMap<&'static str, String>, i32, i32)> {
         match self {
             Self::Node(node) => node.text_attributes(offset),
             Self::Root(_) => Err(Error::UnsupportedInterface),
         }
     }
 
-    pub fn default_text_attributes(&self) -> Result<HashMap<String, String>> {
+    pub fn default_text_attributes(&self) -> Result<HashMap<&'static str, String>> {
         match self {
             Self::Node(node) => node.default_text_attributes(),
             Self::Root(_) => Err(Error::UnsupportedInterface),
@@ -359,7 +494,7 @@ impl Accessible {
         &self,
         offset: i32,
         include_defaults: bool,
-    ) -> Result<(HashMap<String, String>, i32, i32)> {
+    ) -> Result<(HashMap<&'static str, String>, i32, i32)> {
         match self {
             Self::Node(node) => node.text_attribute_run(offset, include_defaults),
             Self::Root(_) => Err(Error::UnsupportedInterface),
@@ -545,8 +680,15 @@ impl Event {
                             Property::Value(value) => EventData::F64(value),
                         }),
                     },
+                    ObjectEvent::SelectionChanged => Self {
+                        kind: "object:selection-changed".into(),
+                        source,
+                        detail1: 0,
+                        detail2: 0,
+                        data: None,
+                    },
                     ObjectEvent::StateChanged(state, value) => Self {
-                        kind: format!("object:state-changed:{}", String::from(state)),
+                        kind: format!("object:state-changed:{}", state.to_static_str()),
                         source,
                         detail1: value as i32,
                         detail2: 0,

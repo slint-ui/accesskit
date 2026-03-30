@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Check formatting
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: install stable toolchain
         uses: dtolnay/rust-toolchain@master
@@ -22,57 +22,88 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
-      - name: clang-format
-        uses: jidicula/clang-format-action@v4.11.0
+      - uses: actions/setup-java@v5
         with:
-          clang-format-version: 15
-          check-path: bindings/c
+          distribution: 'temurin'
+          java-version: '21'
 
-      - name: ruff format
-        uses: chartboost/ruff-action@v1
+      - name: check Java formatting
+        uses: axel-op/googlejavaformat-action@v4
         with:
-          args: format --check
-
-      - name: ruff check
-        uses: chartboost/ruff-action@v1
+          args: "--aosp --set-exit-if-changed"
 
   cargo-deny:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+          - target: aarch64-linux-android
+          - target: i686-pc-windows-gnu
+          - target: i686-pc-windows-msvc
+          - target: x86_64-pc-windows-gnu
+          - target: x86_64-pc-windows-msvc
+          - target: x86_64-unknown-linux-gnu
+
+    name: cargo-deny ${{ matrix.target }}
     runs-on: ubuntu-22.04
+    needs: find-msrv
     steps:
-      - uses: actions/checkout@v3
-      - uses: EmbarkStudios/cargo-deny-action@v1
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: ${{ needs.find-msrv.outputs.version }}
+          log-level: error
+          command: check
+          arguments: --target  ${{ matrix.target }}
 
   clippy:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [macOS-latest, windows-2019, ubuntu-latest]
-    name: cargo clippy
+        include:
+          - os: windows-latest
+            name: Windows
+            adapters: "-p accesskit_windows"
+          - os: macOS-latest
+            name: macOS
+            adapters: "-p accesskit_macos"
+          - os: ubuntu-latest
+            name: Linux
+            adapters: "-p accesskit_unix"
+            extra_adapter_clippy: "-p accesskit_atspi_common --all-features"
+          - os: ubuntu-latest
+            name: Android
+            adapters: "-p accesskit_android"
+    name: cargo clippy (${{ matrix.name }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: install stable toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.8'
-
       - name: restore cache
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy (common packages)
+        run: cargo clippy -p accesskit -p accesskit_consumer -p accesskit_winit --all-targets -- -D warnings
+
+      - name: cargo clippy (adapters)
+        run: cargo clippy ${{ matrix.adapters }} --all-targets -- -D warnings
+
+      - name: cargo clippy (extra adapters)
+        if: ${{ matrix.extra_adapter_clippy }}
+        run: cargo clippy ${{ matrix.extra_adapter_clippy }} --all-targets -- -D warnings
 
   find-msrv:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.step2.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - id: step2
         run: echo "version=`cat Cargo.toml | sed -n 's/rust-version = "\(.*\)"/\1/p'`" >> "$GITHUB_OUTPUT"
 
@@ -80,44 +111,50 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: find-msrv
     strategy:
+      fail-fast: false
       matrix:
-        os: [macOS-latest, windows-2019, ubuntu-latest]
-    name: cargo test
+        include:
+          - os: windows-latest
+            name: Windows
+            adapters: "-p accesskit_windows"
+          - os: macOS-latest
+            name: macOS
+            adapters: "-p accesskit_macos"
+          - os: ubuntu-latest
+            name: Linux
+            adapters: "-p accesskit_atspi_common -p accesskit_unix"
+          - os: ubuntu-latest
+            name: Android
+            adapters: "-p accesskit_android"
+    name: cargo test (${{ matrix.name }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: install stable toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ needs.find-msrv.outputs.version }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.8'
-
       - name: restore cache
         uses: Swatinem/rust-cache@v2
 
-      - name: cargo test
-        run: cargo test
+      - name: cargo test (common packages)
+        run: cargo test -p accesskit -p accesskit_consumer -p accesskit_winit
 
-      - name: cargo test -p accesskit_windows
-        if: matrix.os == 'windows-2019'
-        run: cargo test -p accesskit_windows
+      - name: cargo test (adapters)
+        run: cargo test ${{ matrix.adapters }}
 
-  check-c-header:
+  check-android-dex:
     runs-on: ubuntu-latest
-    name: Check committed C header
     steps:
-    - uses: actions/checkout@v4
-
-    - name: install nightly toolchain
-      uses: dtolnay/rust-toolchain@nightly
-
-    - uses: dtolnay/install@master
-      with:
-        crate: cbindgen
-    - run: cmake -S bindings/c -B build -DACCESSKIT_BUILD_HEADERS=ON -DACCESSKIT_BUILD_LIBRARIES=OFF
-    - run: cmake --build build
-    - run: cmp build/accesskit.h bindings/c/include/accesskit.h
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-30"
+      - run: sdkmanager "build-tools;33.0.2"
+      - run: cp platforms/android/classes.dex platforms/android/classes.dex.orig
+      - run: ./platforms/android/build-dex.sh
+      - run: cmp platforms/android/classes.dex.orig platforms/android/classes.dex

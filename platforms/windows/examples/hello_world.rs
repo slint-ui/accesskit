@@ -1,8 +1,8 @@
 // Based on the create_window sample in windows-samples-rs.
 
 use accesskit::{
-    Action, ActionHandler, ActionRequest, ActivationHandler, DefaultActionVerb, Live, Node,
-    NodeBuilder, NodeId, Rect, Role, Tree, TreeUpdate,
+    Action, ActionHandler, ActionRequest, ActivationHandler, Live, Node, NodeId, Rect, Role, Tree,
+    TreeId, TreeUpdate,
 };
 use accesskit_windows::Adapter;
 use once_cell::sync::Lazy;
@@ -31,7 +31,7 @@ static WINDOW_CLASS_ATOM: Lazy<u16> = Lazy::new(|| {
 
     let atom = unsafe { RegisterClassW(&wc) };
     if atom == 0 {
-        panic!("{}", Error::from_win32());
+        panic!("{}", Error::from_thread());
     }
     atom
 });
@@ -59,28 +59,28 @@ const BUTTON_2_RECT: Rect = Rect {
 };
 
 const SET_FOCUS_MSG: u32 = WM_USER;
-const DO_DEFAULT_ACTION_MSG: u32 = WM_USER + 1;
+const CLICK_MSG: u32 = WM_USER + 1;
 
-fn build_button(id: NodeId, name: &str) -> Node {
+fn build_button(id: NodeId, label: &str) -> Node {
     let rect = match id {
         BUTTON_1_ID => BUTTON_1_RECT,
         BUTTON_2_ID => BUTTON_2_RECT,
         _ => unreachable!(),
     };
 
-    let mut builder = NodeBuilder::new(Role::Button);
-    builder.set_bounds(rect);
-    builder.set_name(name);
-    builder.add_action(Action::Focus);
-    builder.set_default_action_verb(DefaultActionVerb::Click);
-    builder.build()
+    let mut node = Node::new(Role::Button);
+    node.set_bounds(rect);
+    node.set_label(label);
+    node.add_action(Action::Focus);
+    node.add_action(Action::Click);
+    node
 }
 
 fn build_announcement(text: &str) -> Node {
-    let mut builder = NodeBuilder::new(Role::Label);
-    builder.set_name(text);
-    builder.set_live(Live::Polite);
-    builder.build()
+    let mut node = Node::new(Role::Label);
+    node.set_value(text);
+    node.set_live(Live::Polite);
+    node
 }
 
 struct InnerWindowState {
@@ -90,12 +90,13 @@ struct InnerWindowState {
 
 impl InnerWindowState {
     fn build_root(&mut self) -> Node {
-        let mut builder = NodeBuilder::new(Role::Window);
-        builder.set_children(vec![BUTTON_1_ID, BUTTON_2_ID]);
+        let mut node = Node::new(Role::Window);
+        node.set_children(vec![BUTTON_1_ID, BUTTON_2_ID]);
         if self.announcement.is_some() {
-            builder.push_child(ANNOUNCEMENT_ID);
+            node.push_child(ANNOUNCEMENT_ID);
         }
-        builder.build()
+        node.set_language("en");
+        node
     }
 }
 
@@ -105,8 +106,7 @@ impl ActivationHandler for InnerWindowState {
         let root = self.build_root();
         let button_1 = build_button(BUTTON_1_ID, "Button 1");
         let button_2 = build_button(BUTTON_2_ID, "Button 2");
-        let mut tree = Tree::new(WINDOW_ID);
-        tree.app_name = Some("hello_world".to_string());
+        let tree = Tree::new(WINDOW_ID);
 
         let mut result = TreeUpdate {
             nodes: vec![
@@ -115,6 +115,7 @@ impl ActivationHandler for InnerWindowState {
                 (BUTTON_2_ID, button_2),
             ],
             tree: Some(tree),
+            tree_id: TreeId::ROOT,
             focus: self.focus,
         };
         if let Some(announcement) = &self.announcement {
@@ -138,6 +139,7 @@ impl WindowState {
         if let Some(events) = adapter.update_if_active(|| TreeUpdate {
             nodes: vec![],
             tree: None,
+            tree_id: TreeId::ROOT,
             focus,
         }) {
             drop(adapter);
@@ -160,6 +162,7 @@ impl WindowState {
             TreeUpdate {
                 nodes: vec![(ANNOUNCEMENT_ID, announcement), (WINDOW_ID, root)],
                 tree: None,
+                tree_id: TreeId::ROOT,
                 focus: inner_state.focus,
             }
         }) {
@@ -189,27 +192,30 @@ struct SimpleActionHandler {
     window: HWND,
 }
 
+unsafe impl Send for SimpleActionHandler {}
+unsafe impl Sync for SimpleActionHandler {}
+
 impl ActionHandler for SimpleActionHandler {
     fn do_action(&mut self, request: ActionRequest) {
         match request.action {
             Action::Focus => {
                 unsafe {
                     PostMessageW(
-                        self.window,
+                        Some(self.window),
                         SET_FOCUS_MSG,
                         WPARAM(0),
-                        LPARAM(request.target.0 as _),
+                        LPARAM(request.target_node.0 as _),
                     )
                 }
                 .unwrap();
             }
-            Action::Default => {
+            Action::Click => {
                 unsafe {
                     PostMessageW(
-                        self.window,
-                        DO_DEFAULT_ACTION_MSG,
+                        Some(self.window),
+                        CLICK_MSG,
                         WPARAM(0),
-                        LPARAM(request.target.0 as _),
+                        LPARAM(request.target_node.0 as _),
                     )
                 }
                 .unwrap();
@@ -239,7 +245,7 @@ extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: L
             unsafe { DefWindowProcW(window, message, wparam, lparam) }
         }
         WM_PAINT => {
-            unsafe { ValidateRect(window, None) }.unwrap();
+            unsafe { ValidateRect(Some(window), None) }.unwrap();
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -305,7 +311,7 @@ extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: L
             }
             LRESULT(0)
         }
-        DO_DEFAULT_ACTION_MSG => {
+        CLICK_MSG => {
             let id = NodeId(lparam.0 as _);
             if id == BUTTON_1_ID || id == BUTTON_2_ID {
                 let state = unsafe { &*get_window_state(window) };
@@ -319,6 +325,7 @@ extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: L
 
 fn create_window(title: &str, initial_focus: NodeId) -> Result<HWND> {
     let create_params = Box::new(WindowCreateParams(initial_focus));
+    let module = HINSTANCE::from(unsafe { GetModuleHandleW(None)? });
 
     let window = unsafe {
         CreateWindowExW(
@@ -332,12 +339,12 @@ fn create_window(title: &str, initial_focus: NodeId) -> Result<HWND> {
             CW_USEDEFAULT,
             None,
             None,
-            GetModuleHandleW(None).unwrap(),
+            Some(module),
             Some(Box::into_raw(create_params) as _),
-        )
+        )?
     };
-    if window.0 == 0 {
-        return Err(Error::from_win32());
+    if window.is_invalid() {
+        return Err(Error::from_thread());
     }
 
     Ok(window)
@@ -350,11 +357,11 @@ fn main() -> Result<()> {
     println!("Enable Narrator with [Win]+[Ctrl]+[Enter] (or [Win]+[Enter] on older versions of Windows).");
 
     let window = create_window(WINDOW_TITLE, INITIAL_FOCUS)?;
-    unsafe { ShowWindow(window, SW_SHOW) };
+    let _ = unsafe { ShowWindow(window, SW_SHOW) };
 
     let mut message = MSG::default();
-    while unsafe { GetMessageW(&mut message, HWND(0), 0, 0) }.into() {
-        unsafe { TranslateMessage(&message) };
+    while unsafe { GetMessageW(&mut message, None, 0, 0) }.into() {
+        let _ = unsafe { TranslateMessage(&message) };
         unsafe { DispatchMessageW(&message) };
     }
 

@@ -6,12 +6,11 @@
   "packages": {
     "common": {},
     "consumer": {},
+    "platforms/android": {},
     "platforms/atspi-common": {},
     "platforms/macos": {},
     "platforms/unix": {},
     "platforms/windows": {},
-    "platforms/winit": {},
-    "bindings/c": {},
-    "bindings/python": {}
+    "platforms/winit": {}
   }
 }

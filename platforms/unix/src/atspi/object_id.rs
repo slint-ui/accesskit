@@ -4,12 +4,11 @@
 // the LICENSE-MIT file), at your option.
 
 use crate::atspi::OwnedObjectAddress;
-use accesskit::NodeId;
-use accesskit_atspi_common::PlatformNode;
+use accesskit_atspi_common::{NodeId, PlatformNode};
 use serde::{Serialize, Serializer};
 use zbus::{
-    names::OwnedUniqueName,
-    zvariant::{ObjectPath, OwnedObjectPath, Signature, Structure, StructureBuilder, Type},
+    names::UniqueName,
+    zvariant::{ObjectPath, OwnedObjectPath, Signature, Structure, Type},
 };
 
 const ACCESSIBLE_PATH_PREFIX: &str = "/org/a11y/atspi/accessible/";
@@ -22,7 +21,7 @@ pub(crate) enum ObjectId {
 }
 
 impl ObjectId {
-    pub(crate) fn to_address(&self, bus_name: OwnedUniqueName) -> OwnedObjectAddress {
+    pub(crate) fn to_address(&self, bus_name: &UniqueName) -> OwnedObjectAddress {
         OwnedObjectAddress::new(bus_name, self.path())
     }
 
@@ -31,7 +30,9 @@ impl ObjectId {
             Self::Root => ObjectPath::from_str_unchecked(ROOT_PATH),
             Self::Node { adapter, node } => ObjectPath::from_string_unchecked(format!(
                 "{}{}/{}",
-                ACCESSIBLE_PATH_PREFIX, adapter, node.0
+                ACCESSIBLE_PATH_PREFIX,
+                adapter,
+                u128::from(*node)
             )),
         }
         .into()
@@ -45,25 +46,21 @@ impl Serialize for ObjectId {
     {
         match self {
             Self::Root => serializer.serialize_str("root"),
-            Self::Node { node, .. } => serializer.serialize_str(&node.0.to_string()),
+            Self::Node { node, .. } => serializer.serialize_str(&u128::from(*node).to_string()),
         }
     }
 }
 
 impl Type for ObjectId {
-    fn signature() -> Signature<'static> {
-        <&str>::signature()
-    }
+    const SIGNATURE: &'static Signature = <&str>::SIGNATURE;
 }
 
 impl From<ObjectId> for Structure<'_> {
     fn from(id: ObjectId) -> Self {
-        StructureBuilder::new()
-            .add_field(match id {
-                ObjectId::Root => "root".into(),
-                ObjectId::Node { node, .. } => node.0.to_string(),
-            })
-            .build()
+        Self::from((match id {
+            ObjectId::Root => "root".into(),
+            ObjectId::Node { node, .. } => u128::from(node).to_string(),
+        },))
     }
 }
 

@@ -1,6 +1,9 @@
+#[path = "util/fill.rs"]
+mod fill;
+
 use accesskit::{
-    Action, ActionRequest, ActivationHandler, DefaultActionVerb, Live, Node, NodeBuilder, NodeId,
-    Rect, Role, Tree, TreeUpdate,
+    Action, ActionRequest, ActivationHandler, Live, Node, NodeId, Rect, Role, Tree, TreeId,
+    TreeUpdate,
 };
 use accesskit_winit::{Adapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent};
 use std::{
@@ -37,26 +40,26 @@ const BUTTON_2_RECT: Rect = Rect {
     y1: 100.0,
 };
 
-fn build_button(id: NodeId, name: &str) -> Node {
+fn build_button(id: NodeId, label: &str) -> Node {
     let rect = match id {
         BUTTON_1_ID => BUTTON_1_RECT,
         BUTTON_2_ID => BUTTON_2_RECT,
         _ => unreachable!(),
     };
 
-    let mut builder = NodeBuilder::new(Role::Button);
-    builder.set_bounds(rect);
-    builder.set_name(name);
-    builder.add_action(Action::Focus);
-    builder.set_default_action_verb(DefaultActionVerb::Click);
-    builder.build()
+    let mut node = Node::new(Role::Button);
+    node.set_bounds(rect);
+    node.set_label(label);
+    node.add_action(Action::Focus);
+    node.add_action(Action::Click);
+    node
 }
 
 fn build_announcement(text: &str) -> Node {
-    let mut builder = NodeBuilder::new(Role::Label);
-    builder.set_name(text);
-    builder.set_live(Live::Polite);
-    builder.build()
+    let mut node = Node::new(Role::Label);
+    node.set_value(text);
+    node.set_live(Live::Polite);
+    node
 }
 
 struct UiState {
@@ -73,21 +76,20 @@ impl UiState {
     }
 
     fn build_root(&mut self) -> Node {
-        let mut builder = NodeBuilder::new(Role::Window);
-        builder.set_children(vec![BUTTON_1_ID, BUTTON_2_ID]);
+        let mut node = Node::new(Role::Window);
+        node.set_children(vec![BUTTON_1_ID, BUTTON_2_ID]);
         if self.announcement.is_some() {
-            builder.push_child(ANNOUNCEMENT_ID);
+            node.push_child(ANNOUNCEMENT_ID);
         }
-        builder.set_name(WINDOW_TITLE);
-        builder.build()
+        node.set_label(WINDOW_TITLE);
+        node
     }
 
     fn build_initial_tree(&mut self) -> TreeUpdate {
         let root = self.build_root();
         let button_1 = build_button(BUTTON_1_ID, "Button 1");
         let button_2 = build_button(BUTTON_2_ID, "Button 2");
-        let mut tree = Tree::new(WINDOW_ID);
-        tree.app_name = Some("simple".to_string());
+        let tree = Tree::new(WINDOW_ID);
         let mut result = TreeUpdate {
             nodes: vec![
                 (WINDOW_ID, root),
@@ -95,6 +97,7 @@ impl UiState {
                 (BUTTON_2_ID, button_2),
             ],
             tree: Some(tree),
+            tree_id: TreeId::ROOT,
             focus: self.focus,
         };
         if let Some(announcement) = &self.announcement {
@@ -110,6 +113,7 @@ impl UiState {
         adapter.update_if_active(|| TreeUpdate {
             nodes: vec![],
             tree: None,
+            tree_id: TreeId::ROOT,
             focus,
         });
     }
@@ -127,6 +131,7 @@ impl UiState {
             TreeUpdate {
                 nodes: vec![(ANNOUNCEMENT_ID, announcement), (WINDOW_ID, root)],
                 tree: None,
+                tree_id: TreeId::ROOT,
                 focus: self.focus,
             }
         });
@@ -185,6 +190,7 @@ impl Application {
             state: Arc::clone(&ui),
         };
         let adapter = Adapter::with_mixed_handlers(
+            event_loop,
             &window,
             activation_handler,
             self.event_loop_proxy.clone(),
@@ -209,7 +215,14 @@ impl ApplicationHandler for Application {
         adapter.process_event(&window.window, &event);
         match event {
             WindowEvent::CloseRequested => {
+                fill::cleanup_window(&window.window);
                 self.window = None;
+            }
+            WindowEvent::Resized(_) => {
+                window.window.request_redraw();
+            }
+            WindowEvent::RedrawRequested => {
+                fill::fill_window(&window.window);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -228,11 +241,13 @@ impl ApplicationHandler for Application {
                         BUTTON_1_ID
                     };
                     state.set_focus(adapter, new_focus);
+                    window.window.request_redraw();
                 }
                 Key::Named(winit::keyboard::NamedKey::Space) => {
                     let mut state = state.lock().unwrap();
                     let id = state.focus;
                     state.press_button(adapter, id);
+                    window.window.request_redraw();
                 }
                 _ => (),
             },
@@ -248,24 +263,25 @@ impl ApplicationHandler for Application {
         let adapter = &mut window.adapter;
         let state = &mut window.ui;
 
-        for event in self.accesskit_events.lock().unwrap().drain(..) {
-            match event.window_event {
-                AccessKitWindowEvent::InitialTreeRequested => unreachable!(),
-                AccessKitWindowEvent::ActionRequested(ActionRequest { action, target, .. }) => {
-                    if target == BUTTON_1_ID || target == BUTTON_2_ID {
-                        let mut state = state.lock().unwrap();
-                        match action {
-                            Action::Focus => {
-                                state.set_focus(adapter, target);
-                            }
-                            Action::Default => {
-                                state.press_button(adapter, target);
-                            }
-                            _ => (),
+        match user_event.window_event {
+            AccessKitWindowEvent::InitialTreeRequested => unreachable!(),
+            AccessKitWindowEvent::ActionRequested(ActionRequest {
+                action,
+                target_node,
+                ..
+            }) => {
+                if target_node == BUTTON_1_ID || target_node == BUTTON_2_ID {
+                    let mut state = state.lock().unwrap();
+                    match action {
+                        Action::Focus => {
+                            state.set_focus(adapter, target_node);
+                        }
+                        Action::Click => {
+                            state.press_button(adapter, target_node);
                         }
                     }
                 }
-                AccessKitWindowEvent::AccessibilityDeactivated => (),
+                window.window.request_redraw();
             }
         }
     }
@@ -273,6 +289,9 @@ impl ApplicationHandler for Application {
     fn can_create_surfaces(&mut self, event_loop: &ActiveEventLoop) {
         self.create_window(event_loop)
             .expect("failed to create initial window");
+        if let Some(window) = self.window.as_ref() {
+            window.window.request_redraw();
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {

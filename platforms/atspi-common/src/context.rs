@@ -5,6 +5,7 @@
 
 use accesskit::{ActionHandler, ActionRequest};
 use accesskit_consumer::Tree;
+use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::WindowBounds;
@@ -36,6 +37,17 @@ pub(crate) struct Context {
     pub(crate) tree: RwLock<Tree>,
     pub(crate) action_handler: Arc<dyn ActionHandlerNoMut + Send + Sync>,
     pub(crate) root_window_bounds: RwLock<WindowBounds>,
+}
+
+impl Debug for Context {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("app_context", &self.app_context)
+            .field("tree", &self.tree)
+            .field("action_handler", &"ActionHandler")
+            .field("root_window_bounds", &self.root_window_bounds)
+            .finish()
+    }
 }
 
 impl Context {
@@ -74,6 +86,7 @@ impl Context {
     }
 }
 
+#[derive(Debug)]
 pub struct AppContext {
     pub(crate) name: Option<String>,
     pub(crate) toolkit_name: Option<String>,
@@ -83,9 +96,9 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    pub fn new() -> Arc<RwLock<Self>> {
+    pub fn new(name: Option<String>) -> Arc<RwLock<Self>> {
         Arc::new(RwLock::new(Self {
-            name: None,
+            name,
             toolkit_name: None,
             toolkit_version: None,
             id: None,

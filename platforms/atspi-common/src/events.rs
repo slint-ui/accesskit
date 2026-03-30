@@ -3,8 +3,8 @@
 // the LICENSE-APACHE file) or the MIT license (found in
 // the LICENSE-MIT file), at your option.
 
-use accesskit::NodeId;
-use atspi_common::{Live, Role, State};
+use accesskit_consumer::NodeId;
+use atspi_common::{Politeness, Role, State};
 
 use crate::{NodeIdOrRoot, Rect};
 
@@ -34,12 +34,13 @@ pub enum Property {
 #[derive(Debug)]
 pub enum ObjectEvent {
     ActiveDescendantChanged(NodeId),
-    Announcement(String, Live),
+    Announcement(String, Politeness),
     BoundsChanged(Rect),
     CaretMoved(i32),
     ChildAdded(usize, NodeId),
     ChildRemoved(NodeId),
     PropertyChanged(Property),
+    SelectionChanged,
     StateChanged(State, bool),
     TextInserted {
         start_index: i32,
