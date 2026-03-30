@@ -153,8 +153,8 @@ impl Adapter {
     /// # Panics
     ///
     /// Panics if the window is already visible.
-    pub fn with_event_loop_proxy(
-        window: &Box<dyn Window>,
+    pub fn with_event_loop_proxy<W: Window>(
+        window: &W,
         proxy: EventLoopProxy,
         events: Arc<Mutex<Vec<Event>>>,
     ) -> Self {
@@ -199,8 +199,8 @@ impl Adapter {
     /// # Panics
     ///
     /// Panics if the window is already visible.
-    pub fn with_direct_handlers(
-        window: &Box<dyn Window>,
+    pub fn with_direct_handlers<W: Window>(
+        window: &W,
         activation_handler: impl 'static + ActivationHandler + Send,
         action_handler: impl 'static + ActionHandler + Send,
         deactivation_handler: impl 'static + DeactivationHandler + Send,
@@ -234,8 +234,8 @@ impl Adapter {
     /// # Panics
     ///
     /// Panics if the window is already visible.
-    pub fn with_mixed_handlers<T: From<Event> + Send + 'static>(
-        window:  &Box<dyn Window>,
+    pub fn with_mixed_handlers<T: From<Event> + Send + 'static, W: Window>(
+        window:  &W,
         activation_handler: impl 'static + ActivationHandler + Send,
         proxy: EventLoopProxy,
         events: Arc<Mutex<Vec<Event>>>,
@@ -263,7 +263,7 @@ impl Adapter {
     ///
     /// This must be called whenever a new window event is received
     /// and before it is handled by the application.
-    pub fn process_event(&mut self, window: &Box<dyn Window>, event: &WinitWindowEvent) {
+    pub fn process_event<W: Window>(&mut self, window: &W, event: &WinitWindowEvent) {
         self.inner.process_event(window, event);
     }
 
