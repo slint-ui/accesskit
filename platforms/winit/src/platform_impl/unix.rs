@@ -11,7 +11,7 @@ pub struct Adapter {
 }
 
 impl Adapter {
-    pub fn new<W: Window>(
+    pub fn new<W: Window + ?Sized>(
         _: &W,
         activation_handler: impl 'static + ActivationHandler + Send,
         action_handler: impl 'static + ActionHandler + Send,
@@ -33,7 +33,7 @@ impl Adapter {
         self.adapter.update_window_focus_state(is_focused);
     }
 
-    pub fn process_event<W: Window>(&mut self, window: &W, event: &WindowEvent) {
+    pub fn process_event<W: Window + ?Sized>(&mut self, window: &W, event: &WindowEvent) {
         match event {
             WindowEvent::Moved(outer_position) => {
                 let outer_position: (_, _) = outer_position.cast::<f64>().into();
