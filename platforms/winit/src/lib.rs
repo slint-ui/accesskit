@@ -175,7 +175,6 @@ impl Adapter {
             proxy,
         };
         Self::with_direct_handlers(
-            event_loop,
             window,
             activation_handler,
             action_handler,
@@ -201,7 +200,6 @@ impl Adapter {
     ///
     /// Panics if the window is already visible.
     pub fn with_direct_handlers(
-		event_loop: &Box<dyn ActiveEventLoop>,
         window: &Box<dyn Window>,
         activation_handler: impl 'static + ActivationHandler + Send,
         action_handler: impl 'static + ActionHandler + Send,
@@ -212,7 +210,6 @@ impl Adapter {
         }
 
         let inner = platform_impl::Adapter::new(
-            event_loop,
             window,
             activation_handler,
             action_handler,
@@ -238,7 +235,6 @@ impl Adapter {
     ///
     /// Panics if the window is already visible.
     pub fn with_mixed_handlers<T: From<Event> + Send + 'static>(
-        event_loop:  &Box<dyn ActiveEventLoop>,
         window:  &Box<dyn Window>,
         activation_handler: impl 'static + ActivationHandler + Send,
         proxy: EventLoopProxy,
@@ -256,7 +252,6 @@ impl Adapter {
             proxy,
         };
         Self::with_direct_handlers(
-            event_loop,
             window,
             activation_handler,
             action_handler,
